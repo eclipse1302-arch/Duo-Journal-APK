@@ -1,3 +1,6 @@
 {
-  "type": "gradio"
+  "$schema": "https://modelscope.cn/api/v1/studios/deploy_schema.json",
+  "sdk_type": "gradio",
+  "resource_configuration": "platform/2v-cpu-16g-mem",
+  "port": 7860
 }
