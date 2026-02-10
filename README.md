@@ -1,3 +1,13 @@
+---
+license: apache-2.0
+title: 双人日记
+sdk: docker
+emoji: 🚀
+colorFrom: blue
+colorTo: indigo
+pinned: false
+---
+
 # Duo-Journal
 
 # React + TypeScript + Vite
