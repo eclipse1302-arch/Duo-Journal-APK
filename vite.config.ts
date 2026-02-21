@@ -12,5 +12,13 @@ export default defineConfig({
   },
   server: {
     allowedHosts: true,
+    proxy: {
+      '/api/ai': {
+        target: 'https://api-inference.modelscope.cn',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/ai/, '/v1'),
+        secure: true,
+      },
+    },
   },
 })

@@ -1,5 +1,5 @@
 import { supabase } from './supabase';
-import type { JournalEntry, PartnerRequest, PartnerRequestWithProfiles, Profile } from '../types';
+import type { JournalEntry, PartnerRequest, PartnerRequestWithProfiles, Profile, CalendarComment, CalendarIcon, AIComment, AIChatMessage } from '../types';
 
 // ── Profile ──────────────────────────────────────────────
 
@@ -302,4 +302,276 @@ export async function cancelBreakLink(requestId: string): Promise<void> {
     })
     .eq('id', requestId);
   if (error) throw error;
+}
+
+// ── Calendar Comments ─────────────────────────────────────
+
+export async function getCalendarComment(
+  userId: string,
+  date: string
+): Promise<CalendarComment | null> {
+  const { data } = await supabase
+    .from('calendar_comments')
+    .select('*')
+    .eq('user_id', userId)
+    .eq('date', date)
+    .maybeSingle();
+  return data;
+}
+
+export async function saveCalendarComment(
+  userId: string,
+  date: string,
+  comment: string
+): Promise<CalendarComment> {
+  const existing = await getCalendarComment(userId, date);
+
+  if (existing) {
+    if (!comment.trim()) {
+      await supabase.from('calendar_comments').delete().eq('id', existing.id);
+      return existing;
+    }
+    const { data, error } = await supabase
+      .from('calendar_comments')
+      .update({ comment, updated_at: new Date().toISOString() })
+      .eq('id', existing.id)
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  }
+
+  if (!comment.trim()) {
+    return { id: '', user_id: userId, date, comment: '', created_at: '', updated_at: '' };
+  }
+
+  const { data, error } = await supabase
+    .from('calendar_comments')
+    .insert({ user_id: userId, date, comment })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function getCommentsForMonth(
+  userId: string,
+  year: number,
+  month: number
+): Promise<Map<string, string>> {
+  const startDate = `${year}-${String(month + 1).padStart(2, '0')}-01`;
+  const endMonth = month === 11 ? 1 : month + 2;
+  const endYear = month === 11 ? year + 1 : year;
+  const endDate = `${endYear}-${String(endMonth).padStart(2, '0')}-01`;
+
+  const { data } = await supabase
+    .from('calendar_comments')
+    .select('date, comment')
+    .eq('user_id', userId)
+    .gte('date', startDate)
+    .lt('date', endDate);
+
+  const map = new Map<string, string>();
+  (data || []).forEach((item) => map.set(item.date, item.comment));
+  return map;
+}
+
+// ── Calendar Icons ────────────────────────────────────────
+
+export async function getCalendarIcons(
+  userId: string,
+  date: string
+): Promise<CalendarIcon | null> {
+  const { data } = await supabase
+    .from('calendar_icons')
+    .select('*')
+    .eq('user_id', userId)
+    .eq('date', date)
+    .maybeSingle();
+  return data;
+}
+
+export async function saveCalendarIcons(
+  userId: string,
+  date: string,
+  icons: string[]
+): Promise<CalendarIcon> {
+  const existing = await getCalendarIcons(userId, date);
+
+  if (existing) {
+    if (icons.length === 0) {
+      await supabase.from('calendar_icons').delete().eq('id', existing.id);
+      return existing;
+    }
+    const { data, error } = await supabase
+      .from('calendar_icons')
+      .update({ icons, updated_at: new Date().toISOString() })
+      .eq('id', existing.id)
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  }
+
+  if (icons.length === 0) {
+    return { id: '', user_id: userId, date, icons: [], created_at: '', updated_at: '' };
+  }
+
+  const { data, error } = await supabase
+    .from('calendar_icons')
+    .insert({ user_id: userId, date, icons })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function getIconsForMonth(
+  userId: string,
+  year: number,
+  month: number
+): Promise<Map<string, string[]>> {
+  const startDate = `${year}-${String(month + 1).padStart(2, '0')}-01`;
+  const endMonth = month === 11 ? 1 : month + 2;
+  const endYear = month === 11 ? year + 1 : year;
+  const endDate = `${endYear}-${String(endMonth).padStart(2, '0')}-01`;
+
+  const { data } = await supabase
+    .from('calendar_icons')
+    .select('date, icons')
+    .eq('user_id', userId)
+    .gte('date', startDate)
+    .lt('date', endDate);
+
+  const map = new Map<string, string[]>();
+  (data || []).forEach((item) => map.set(item.date, item.icons));
+  return map;
+}
+
+// ── AI Comments & Scores ──────────────────────────────────
+
+export async function getAIComment(entryId: string): Promise<AIComment | null> {
+  const { data } = await supabase
+    .from('ai_comments')
+    .select('*')
+    .eq('entry_id', entryId)
+    .maybeSingle();
+  return data;
+}
+
+export async function saveAIComment(
+  entryId: string,
+  userId: string,
+  comment: string,
+  score: number | null,
+  isPublic: boolean = true
+): Promise<AIComment> {
+  const existing = await getAIComment(entryId);
+
+  if (existing) {
+    const { data, error } = await supabase
+      .from('ai_comments')
+      .update({ 
+        comment, 
+        score, 
+        is_public: isPublic,
+        updated_at: new Date().toISOString() 
+      })
+      .eq('id', existing.id)
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  }
+
+  const { data, error } = await supabase
+    .from('ai_comments')
+    .insert({ entry_id: entryId, user_id: userId, comment, score, is_public: isPublic })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function updateAICommentVisibility(
+  aiCommentId: string,
+  isPublic: boolean
+): Promise<void> {
+  const { error } = await supabase
+    .from('ai_comments')
+    .update({ is_public: isPublic, updated_at: new Date().toISOString() })
+    .eq('id', aiCommentId);
+  if (error) throw error;
+}
+
+export async function getAIChatMessages(aiCommentId: string): Promise<AIChatMessage[]> {
+  const { data } = await supabase
+    .from('ai_chat_messages')
+    .select('*')
+    .eq('ai_comment_id', aiCommentId)
+    .order('created_at', { ascending: true });
+  return data || [];
+}
+
+export async function saveAIChatMessage(
+  aiCommentId: string,
+  role: 'user' | 'assistant',
+  content: string
+): Promise<AIChatMessage> {
+  const { data, error } = await supabase
+    .from('ai_chat_messages')
+    .insert({ ai_comment_id: aiCommentId, role, content })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+// ── Password Management ───────────────────────────────────
+
+export async function changePassword(
+  currentPassword: string,
+  newPassword: string
+): Promise<void> {
+  // First verify current password by re-authenticating
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user?.email) throw new Error('User not found');
+
+  const { error: signInError } = await supabase.auth.signInWithPassword({
+    email: user.email,
+    password: currentPassword,
+  });
+
+  if (signInError) {
+    throw new Error('Current password is incorrect');
+  }
+
+  // Update password
+  const { error } = await supabase.auth.updateUser({
+    password: newPassword,
+  });
+
+  if (error) throw error;
+}
+
+// ── Media Upload ──────────────────────────────────────────
+
+export async function uploadMedia(
+  userId: string,
+  file: File
+): Promise<string> {
+  const fileExt = file.name.split('.').pop();
+  const fileName = `${userId}/${Date.now()}-${Math.random().toString(36).substring(7)}.${fileExt}`;
+  
+  const { error } = await supabase.storage
+    .from('journal-media')
+    .upload(fileName, file);
+  
+  if (error) throw error;
+  
+  const { data } = supabase.storage
+    .from('journal-media')
+    .getPublicUrl(fileName);
+  
+  return data.publicUrl;
 }

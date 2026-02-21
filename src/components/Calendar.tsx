@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { getEntriesForMonth } from '../lib/database';
+import { getLocalCommentsForMonth, getLocalIconsForMonth } from '../lib/calendar-storage';
 
 interface CalendarProps {
   currentUserId: string;
@@ -9,6 +10,7 @@ interface CalendarProps {
   selectedDate: string | null;
   refreshTick?: number;
   isViewingPartner: boolean;
+  partnerUserId?: string | null;
 }
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -35,31 +37,61 @@ function getTodayString(): string {
 }
 
 export default function Calendar({
+  currentUserId,
   viewingUserId,
   onDateSelect,
   selectedDate,
   refreshTick,
   isViewingPartner,
+  partnerUserId,
 }: CalendarProps) {
   const today = getTodayString();
   const [year, setYear] = useState(() => new Date().getFullYear());
   const [month, setMonth] = useState(() => new Date().getMonth());
   const [entryDates, setEntryDates] = useState<Set<string>>(new Set());
+  const [comments, setComments] = useState<Map<string, string>>(new Map());
+  const [icons, setIcons] = useState<Map<string, string[]>>(new Map());
+  const [partnerComments, setPartnerComments] = useState<Map<string, string>>(new Map());
+  const [partnerIcons, setPartnerIcons] = useState<Map<string, string[]>>(new Map());
   const [isLoadingEntries, setIsLoadingEntries] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     setIsLoadingEntries(true);
-    getEntriesForMonth(viewingUserId, year, month)
-      .then((dates) => {
-        if (!cancelled) setEntryDates(dates);
-      })
-      .catch(console.error)
-      .finally(() => {
+    
+    const loadData = async () => {
+      try {
+        const dates = await getEntriesForMonth(viewingUserId, year, month);
+        
+        // Load calendar decorations from localStorage (synchronous)
+        const userComments = getLocalCommentsForMonth(currentUserId, year, month);
+        const userIcons = getLocalIconsForMonth(currentUserId, year, month);
+        
+        if (!cancelled) {
+          setEntryDates(dates);
+          setComments(userComments);
+          setIcons(userIcons);
+        }
+
+        // Load partner's decorations from localStorage
+        if (partnerUserId) {
+          const pComments = getLocalCommentsForMonth(partnerUserId, year, month);
+          const pIcons = getLocalIconsForMonth(partnerUserId, year, month);
+          if (!cancelled) {
+            setPartnerComments(pComments);
+            setPartnerIcons(pIcons);
+          }
+        }
+      } catch (err) {
+        console.error('Failed to load calendar data:', err);
+      } finally {
         if (!cancelled) setIsLoadingEntries(false);
-      });
+      }
+    };
+
+    loadData();
     return () => { cancelled = true; };
-  }, [viewingUserId, year, month, refreshTick]);
+  }, [viewingUserId, currentUserId, partnerUserId, year, month, refreshTick]);
 
   const daysInMonth = getDaysInMonth(year, month);
   const firstDay = getFirstDayOfWeek(year, month);
@@ -134,18 +166,28 @@ export default function Calendar({
           const hasEntry = entryDates.has(dateStr);
           const isToday = dateStr === today;
           const isSelected = dateStr === selectedDate;
+          
+          // Get comments and icons for this date
+          const myComment = comments.get(dateStr);
+          const myIcons = icons.get(dateStr) || [];
+          const pComment = partnerComments.get(dateStr);
+          const pIcons = partnerIcons.get(dateStr) || [];
+          
+          // Combine icons (show up to 3)
+          const allIcons = [...new Set([...myIcons, ...pIcons])].slice(0, 3);
+          const hasDecorations = myComment || pComment || allIcons.length > 0;
 
           return (
             <button
               key={dateStr}
               onClick={() => onDateSelect(dateStr)}
               className={`
-                aspect-square rounded-xl flex flex-col items-center justify-center
+                min-h-[70px] sm:min-h-[80px] rounded-xl flex flex-col items-center justify-start pt-1
                 text-sm font-medium transition-all duration-200 relative
                 ${isSelected
                   ? isViewingPartner
-                    ? 'bg-secondary text-secondary-foreground shadow-md scale-105'
-                    : 'bg-primary text-primary-foreground shadow-md scale-105'
+                    ? 'bg-secondary text-secondary-foreground shadow-md scale-[1.02]'
+                    : 'bg-primary text-primary-foreground shadow-md scale-[1.02]'
                   : isToday
                     ? 'bg-surface font-semibold ring-2 ring-primary/30'
                     : 'hover:bg-surface-hover text-foreground'
@@ -153,12 +195,36 @@ export default function Calendar({
               `}
               aria-label={`${MONTH_NAMES[month]} ${day}, ${year}${hasEntry ? ' - has journal entry' : ''}`}
             >
-              <span>{day}</span>
-              {hasEntry && !isSelected && (
-                <span className={`absolute bottom-1.5 w-1.5 h-1.5 rounded-full ${dotColor}`} />
+              <span className="text-xs sm:text-sm">{day}</span>
+              
+              {/* Icons row */}
+              {allIcons.length > 0 && (
+                <div className="flex gap-0.5 mt-0.5 text-[10px] sm:text-xs">
+                  {allIcons.map((icon, i) => (
+                    <span key={i}>{icon}</span>
+                  ))}
+                </div>
               )}
-              {hasEntry && isSelected && (
-                <span className="absolute bottom-1.5 w-1.5 h-1.5 rounded-full bg-current opacity-60" />
+              
+              {/* Comments - show both users' comments */}
+              {(myComment || pComment) && (
+                <div className="flex flex-col items-center mt-0.5 w-full px-0.5">
+                  {myComment && (
+                    <span className={`text-[8px] sm:text-[10px] truncate max-w-full ${isSelected ? 'opacity-90' : 'text-primary'}`}>
+                      {myComment}
+                    </span>
+                  )}
+                  {pComment && pComment !== myComment && (
+                    <span className={`text-[8px] sm:text-[10px] truncate max-w-full ${isSelected ? 'opacity-90' : 'text-secondary'}`}>
+                      {pComment}
+                    </span>
+                  )}
+                </div>
+              )}
+              
+              {/* Entry indicator dot */}
+              {hasEntry && !hasDecorations && (
+                <span className={`absolute bottom-1.5 w-1.5 h-1.5 rounded-full ${isSelected ? 'bg-current opacity-60' : dotColor}`} />
               )}
             </button>
           );

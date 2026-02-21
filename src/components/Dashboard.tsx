@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback, useReducer } from 'react';
-import { BookHeart, LogOut, RefreshCw, Link, Bell } from 'lucide-react';
+import { BookHeart, LogOut, RefreshCw, Link, Bell, Key, ChevronDown } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { getActivePartner, getPendingIncomingRequests, getEntryCount } from '../lib/database';
 import Calendar from './Calendar';
 import JournalModal from './JournalModal';
 import PartnerPanel from './PartnerPanel';
+import ChangePasswordModal from './ChangePasswordModal';
 import type { Profile, PartnerRequest } from '../types';
 
 export default function Dashboard() {
@@ -18,6 +19,8 @@ export default function Dashboard() {
   const [activePartner, setActivePartner] = useState<{ request: PartnerRequest; partner: Profile } | null>(null);
   const [pendingCount, setPendingCount] = useState(0);
   const [showPartnerPanel, setShowPartnerPanel] = useState(false);
+  const [showPasswordModal, setShowPasswordModal] = useState(false);
+  const [showUserMenu, setShowUserMenu] = useState(false);
 
   const [myEntryCount, setMyEntryCount] = useState(0);
   const [partnerEntryCount, setPartnerEntryCount] = useState(0);
@@ -136,10 +139,47 @@ export default function Dashboard() {
               )}
             </button>
 
-            {/* User indicator */}
-            <div className="hidden sm:flex items-center gap-2 text-sm text-muted-foreground px-2">
-              <span>{profile.avatar}</span>
-              <span>{profile.display_name}</span>
+            {/* User indicator with dropdown */}
+            <div className="relative">
+              <button
+                onClick={() => setShowUserMenu(!showUserMenu)}
+                className="hidden sm:flex items-center gap-2 text-sm text-muted-foreground px-2 py-1 rounded-lg hover:bg-surface transition-colors"
+              >
+                <span>{profile.avatar}</span>
+                <span>{profile.display_name}</span>
+                <ChevronDown className={`w-3 h-3 transition-transform ${showUserMenu ? 'rotate-180' : ''}`} />
+              </button>
+              
+              {showUserMenu && (
+                <>
+                  <div 
+                    className="fixed inset-0 z-40" 
+                    onClick={() => setShowUserMenu(false)} 
+                  />
+                  <div className="absolute right-0 top-full mt-1 w-48 py-1 rounded-lg bg-card border border-border shadow-elevated z-50">
+                    <button
+                      onClick={() => {
+                        setShowUserMenu(false);
+                        setShowPasswordModal(true);
+                      }}
+                      className="w-full px-4 py-2 text-left text-sm hover:bg-surface flex items-center gap-2"
+                    >
+                      <Key className="w-4 h-4" />
+                      Change Password
+                    </button>
+                    <button
+                      onClick={() => {
+                        setShowUserMenu(false);
+                        handleLogout();
+                      }}
+                      className="w-full px-4 py-2 text-left text-sm hover:bg-surface flex items-center gap-2 text-destructive"
+                    >
+                      <LogOut className="w-4 h-4" />
+                      Log Out
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
 
             <button
@@ -226,6 +266,7 @@ export default function Dashboard() {
           selectedDate={selectedDate}
           refreshTick={refreshTick}
           isViewingPartner={isViewingPartner}
+          partnerUserId={activePartner?.partner.id ?? null}
         />
 
         {/* Legend */}
@@ -260,6 +301,12 @@ export default function Dashboard() {
         open={showPartnerPanel}
         onClose={() => setShowPartnerPanel(false)}
         onPartnerChanged={handlePartnerChanged}
+      />
+
+      {/* Change password modal */}
+      <ChangePasswordModal
+        open={showPasswordModal}
+        onClose={() => setShowPasswordModal(false)}
       />
     </div>
   );
