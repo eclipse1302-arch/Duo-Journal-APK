@@ -1,111 +1,93 @@
+// Supabase-based storage for AI comments and chat messages.
+// Data syncs across all devices and users.
+
+import { supabase } from './supabase';
 import type { AIComment, AIChatMessage } from '../types';
-
-// LocalStorage-based storage for AI comments and chat messages.
-// This avoids requiring new Supabase tables.
-
-const AI_COMMENTS_KEY = 'duo-journal-ai-comments';
-const AI_CHAT_KEY = 'duo-journal-ai-chat';
-
-function loadAllComments(): Record<string, AIComment> {
-  try {
-    const raw = localStorage.getItem(AI_COMMENTS_KEY);
-    return raw ? JSON.parse(raw) : {};
-  } catch {
-    return {};
-  }
-}
-
-function saveAllComments(data: Record<string, AIComment>) {
-  localStorage.setItem(AI_COMMENTS_KEY, JSON.stringify(data));
-}
-
-function loadAllChats(): Record<string, AIChatMessage[]> {
-  try {
-    const raw = localStorage.getItem(AI_CHAT_KEY);
-    return raw ? JSON.parse(raw) : {};
-  } catch {
-    return {};
-  }
-}
-
-function saveAllChats(data: Record<string, AIChatMessage[]>) {
-  localStorage.setItem(AI_CHAT_KEY, JSON.stringify(data));
-}
 
 // ── AI Comments ───────────────────────────────────────────
 
-export function getLocalAIComment(entryId: string): AIComment | null {
-  const all = loadAllComments();
-  return all[entryId] ?? null;
+export async function getAICommentForEntry(entryId: string): Promise<AIComment | null> {
+  const { data } = await supabase
+    .from('ai_comments')
+    .select('*')
+    .eq('entry_id', entryId)
+    .maybeSingle();
+  return data;
 }
 
-export function saveLocalAIComment(
+export async function saveAICommentForEntry(
   entryId: string,
   userId: string,
   comment: string,
   score: number | null,
   isPublic: boolean = true
-): AIComment {
-  const all = loadAllComments();
-  const existing = all[entryId];
-  const now = new Date().toISOString();
+): Promise<AIComment> {
+  const { data: existing } = await supabase
+    .from('ai_comments')
+    .select('id')
+    .eq('entry_id', entryId)
+    .maybeSingle();
 
-  const aiComment: AIComment = {
-    id: existing?.id ?? crypto.randomUUID(),
-    entry_id: entryId,
-    user_id: userId,
-    comment,
-    score,
-    is_public: isPublic,
-    created_at: existing?.created_at ?? now,
-    updated_at: now,
-  };
+  if (existing) {
+    const { data, error } = await supabase
+      .from('ai_comments')
+      .update({
+        comment,
+        score,
+        is_public: isPublic,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', existing.id)
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  }
 
-  all[entryId] = aiComment;
-  saveAllComments(all);
-  return aiComment;
+  const { data, error } = await supabase
+    .from('ai_comments')
+    .insert({ entry_id: entryId, user_id: userId, comment, score, is_public: isPublic })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
 }
 
-export function updateLocalAICommentVisibility(
-  entryId: string,
+export async function updateAICommentVisibilityInDB(
+  aiCommentId: string,
   isPublic: boolean
-): AIComment | null {
-  const all = loadAllComments();
-  const existing = all[entryId];
-  if (!existing) return null;
-
-  existing.is_public = isPublic;
-  existing.updated_at = new Date().toISOString();
-  all[entryId] = existing;
-  saveAllComments(all);
-  return existing;
+): Promise<AIComment | null> {
+  const { data, error } = await supabase
+    .from('ai_comments')
+    .update({ is_public: isPublic, updated_at: new Date().toISOString() })
+    .eq('id', aiCommentId)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
 }
 
 // ── AI Chat Messages ──────────────────────────────────────
 
-export function getLocalAIChatMessages(aiCommentId: string): AIChatMessage[] {
-  const all = loadAllChats();
-  return all[aiCommentId] ?? [];
+export async function getAIChatMessagesFromDB(aiCommentId: string): Promise<AIChatMessage[]> {
+  const { data } = await supabase
+    .from('ai_chat_messages')
+    .select('*')
+    .eq('ai_comment_id', aiCommentId)
+    .order('created_at', { ascending: true });
+  return data || [];
 }
 
-export function saveLocalAIChatMessage(
+export async function saveAIChatMessageToDB(
   aiCommentId: string,
   role: 'user' | 'assistant',
   content: string
-): AIChatMessage {
-  const all = loadAllChats();
-  const messages = all[aiCommentId] ?? [];
-
-  const msg: AIChatMessage = {
-    id: crypto.randomUUID(),
-    ai_comment_id: aiCommentId,
-    role,
-    content,
-    created_at: new Date().toISOString(),
-  };
-
-  messages.push(msg);
-  all[aiCommentId] = messages;
-  saveAllChats(all);
-  return msg;
+): Promise<AIChatMessage> {
+  const { data, error } = await supabase
+    .from('ai_chat_messages')
+    .insert({ ai_comment_id: aiCommentId, role, content })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
 }

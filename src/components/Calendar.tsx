@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { getEntriesForMonth } from '../lib/database';
-import { getLocalCommentsForMonth, getLocalIconsForMonth } from '../lib/calendar-storage';
+import { getCommentsForMonthFromDB, getIconsForMonthFromDB } from '../lib/calendar-storage';
 
 interface CalendarProps {
   currentUserId: string;
@@ -61,11 +61,11 @@ export default function Calendar({
     
     const loadData = async () => {
       try {
-        const dates = await getEntriesForMonth(viewingUserId, year, month);
-        
-        // Load calendar decorations from localStorage (synchronous)
-        const userComments = getLocalCommentsForMonth(currentUserId, year, month);
-        const userIcons = getLocalIconsForMonth(currentUserId, year, month);
+        const [dates, userComments, userIcons] = await Promise.all([
+          getEntriesForMonth(viewingUserId, year, month),
+          getCommentsForMonthFromDB(currentUserId, year, month),
+          getIconsForMonthFromDB(currentUserId, year, month),
+        ]);
         
         if (!cancelled) {
           setEntryDates(dates);
@@ -73,10 +73,12 @@ export default function Calendar({
           setIcons(userIcons);
         }
 
-        // Load partner's decorations from localStorage
+        // Load partner's decorations from Supabase
         if (partnerUserId) {
-          const pComments = getLocalCommentsForMonth(partnerUserId, year, month);
-          const pIcons = getLocalIconsForMonth(partnerUserId, year, month);
+          const [pComments, pIcons] = await Promise.all([
+            getCommentsForMonthFromDB(partnerUserId, year, month),
+            getIconsForMonthFromDB(partnerUserId, year, month),
+          ]);
           if (!cancelled) {
             setPartnerComments(pComments);
             setPartnerIcons(pIcons);

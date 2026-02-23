@@ -1,101 +1,145 @@
-// LocalStorage-based storage for calendar comments and icons.
-// Avoids requiring new Supabase tables.
+// Supabase-based storage for calendar comments and icons.
+// Data syncs across all devices and users.
 
-const COMMENTS_KEY = 'duo-journal-calendar-comments';
-const ICONS_KEY = 'duo-journal-calendar-icons';
+import { supabase } from './supabase';
 
 // ── Calendar Comments ─────────────────────────────────────
 
-function loadComments(): Record<string, Record<string, string>> {
-  try {
-    const raw = localStorage.getItem(COMMENTS_KEY);
-    return raw ? JSON.parse(raw) : {};
-  } catch {
-    return {};
+export async function getCalendarCommentForDate(
+  userId: string,
+  date: string
+): Promise<string> {
+  const { data } = await supabase
+    .from('calendar_comments')
+    .select('comment')
+    .eq('user_id', userId)
+    .eq('date', date)
+    .maybeSingle();
+  return data?.comment ?? '';
+}
+
+export async function saveCalendarCommentForDate(
+  userId: string,
+  date: string,
+  comment: string
+): Promise<void> {
+  if (!comment.trim()) {
+    // Delete if empty
+    await supabase
+      .from('calendar_comments')
+      .delete()
+      .eq('user_id', userId)
+      .eq('date', date);
+    return;
   }
-}
 
-function persistComments(data: Record<string, Record<string, string>>) {
-  localStorage.setItem(COMMENTS_KEY, JSON.stringify(data));
-}
+  const { data: existing } = await supabase
+    .from('calendar_comments')
+    .select('id')
+    .eq('user_id', userId)
+    .eq('date', date)
+    .maybeSingle();
 
-export function getLocalCalendarComment(userId: string, date: string): string {
-  const all = loadComments();
-  return all[userId]?.[date] ?? '';
-}
-
-export function saveLocalCalendarComment(userId: string, date: string, comment: string) {
-  const all = loadComments();
-  if (!all[userId]) all[userId] = {};
-  if (comment.trim()) {
-    all[userId][date] = comment;
+  if (existing) {
+    await supabase
+      .from('calendar_comments')
+      .update({ comment, updated_at: new Date().toISOString() })
+      .eq('id', existing.id);
   } else {
-    delete all[userId][date];
+    await supabase
+      .from('calendar_comments')
+      .insert({ user_id: userId, date, comment });
   }
-  persistComments(all);
 }
 
-export function getLocalCommentsForMonth(
+export async function getCommentsForMonthFromDB(
   userId: string,
   year: number,
   month: number
-): Map<string, string> {
-  const all = loadComments();
-  const userComments = all[userId] ?? {};
-  const prefix = `${year}-${String(month + 1).padStart(2, '0')}-`;
+): Promise<Map<string, string>> {
+  const startDate = `${year}-${String(month + 1).padStart(2, '0')}-01`;
+  const endMonth = month === 11 ? 1 : month + 2;
+  const endYear = month === 11 ? year + 1 : year;
+  const endDate = `${endYear}-${String(endMonth).padStart(2, '0')}-01`;
+
+  const { data } = await supabase
+    .from('calendar_comments')
+    .select('date, comment')
+    .eq('user_id', userId)
+    .gte('date', startDate)
+    .lt('date', endDate);
+
   const map = new Map<string, string>();
-  for (const [date, comment] of Object.entries(userComments)) {
-    if (date.startsWith(prefix)) {
-      map.set(date, comment);
-    }
-  }
+  (data || []).forEach((item) => map.set(item.date, item.comment));
   return map;
 }
 
 // ── Calendar Icons ────────────────────────────────────────
 
-function loadIcons(): Record<string, Record<string, string[]>> {
-  try {
-    const raw = localStorage.getItem(ICONS_KEY);
-    return raw ? JSON.parse(raw) : {};
-  } catch {
-    return {};
+export async function getCalendarIconsForDate(
+  userId: string,
+  date: string
+): Promise<string[]> {
+  const { data } = await supabase
+    .from('calendar_icons')
+    .select('icons')
+    .eq('user_id', userId)
+    .eq('date', date)
+    .maybeSingle();
+  return data?.icons ?? [];
+}
+
+export async function saveCalendarIconsForDate(
+  userId: string,
+  date: string,
+  icons: string[]
+): Promise<void> {
+  if (icons.length === 0) {
+    await supabase
+      .from('calendar_icons')
+      .delete()
+      .eq('user_id', userId)
+      .eq('date', date);
+    return;
   }
-}
 
-function persistIcons(data: Record<string, Record<string, string[]>>) {
-  localStorage.setItem(ICONS_KEY, JSON.stringify(data));
-}
+  const { data: existing } = await supabase
+    .from('calendar_icons')
+    .select('id')
+    .eq('user_id', userId)
+    .eq('date', date)
+    .maybeSingle();
 
-export function getLocalCalendarIcons(userId: string, date: string): string[] {
-  const all = loadIcons();
-  return all[userId]?.[date] ?? [];
-}
-
-export function saveLocalCalendarIcons(userId: string, date: string, icons: string[]) {
-  const all = loadIcons();
-  if (!all[userId]) all[userId] = {};
-  if (icons.length > 0) {
-    all[userId][date] = icons;
+  if (existing) {
+    await supabase
+      .from('calendar_icons')
+      .update({ icons, updated_at: new Date().toISOString() })
+      .eq('id', existing.id);
   } else {
-    delete all[userId][date];
+    await supabase
+      .from('calendar_icons')
+      .insert({ user_id: userId, date, icons });
   }
-  persistIcons(all);
 }
 
-export function getLocalIconsForMonth(
+export async function getIconsForMonthFromDB(
   userId: string,
   year: number,
   month: number
-): Map<string, string[]> {
-  const all = loadIcons();
-  const userIcons = all[userId] ?? {};
-  const prefix = `${year}-${String(month + 1).padStart(2, '0')}-`;
+): Promise<Map<string, string[]>> {
+  const startDate = `${year}-${String(month + 1).padStart(2, '0')}-01`;
+  const endMonth = month === 11 ? 1 : month + 2;
+  const endYear = month === 11 ? year + 1 : year;
+  const endDate = `${endYear}-${String(endMonth).padStart(2, '0')}-01`;
+
+  const { data } = await supabase
+    .from('calendar_icons')
+    .select('date, icons')
+    .eq('user_id', userId)
+    .gte('date', startDate)
+    .lt('date', endDate);
+
   const map = new Map<string, string[]>();
-  for (const [date, icons] of Object.entries(userIcons)) {
-    if (date.startsWith(prefix)) {
-      map.set(date, icons);
-    }
-  }
+  (data || []).forEach((item) => map.set(item.date, item.icons));
   return map;
 }

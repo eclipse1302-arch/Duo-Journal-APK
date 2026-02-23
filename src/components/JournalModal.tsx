@@ -5,12 +5,12 @@ import {
   getEntryByDate, saveEntry, deleteEntry, 
 } from '../lib/database';
 import {
-  getLocalAIComment, saveLocalAIComment, updateLocalAICommentVisibility,
-  getLocalAIChatMessages, saveLocalAIChatMessage
+  getAICommentForEntry, saveAICommentForEntry, updateAICommentVisibilityInDB,
+  getAIChatMessagesFromDB, saveAIChatMessageToDB
 } from '../lib/ai-storage';
 import {
-  getLocalCalendarComment, saveLocalCalendarComment,
-  getLocalCalendarIcons, saveLocalCalendarIcons
+  getCalendarCommentForDate, saveCalendarCommentForDate,
+  getCalendarIconsForDate, saveCalendarIconsForDate
 } from '../lib/calendar-storage';
 import { processImage, processVideo } from '../lib/media-utils';
 import { generateAIComment, generateAICommentWithScore, continueConversation } from '../lib/ai-service';
@@ -88,11 +88,11 @@ export default function JournalModal({
 
     const loadEntries = async () => {
       try {
-        const entry = await getEntryByDate(viewingUserId, date);
-        
-        // Load calendar decorations from localStorage (synchronous)
-        const comment = isOwn ? getLocalCalendarComment(currentUserId, date) : '';
-        const iconsList = isOwn ? getLocalCalendarIcons(currentUserId, date) : [];
+        const [entry, comment, iconsList] = await Promise.all([
+          getEntryByDate(viewingUserId, date),
+          isOwn ? getCalendarCommentForDate(currentUserId, date) : Promise.resolve(''),
+          isOwn ? getCalendarIconsForDate(currentUserId, date) : Promise.resolve([]),
+        ]);
         
         if (!cancelled) {
           setExistingEntry(entry);
@@ -100,12 +100,12 @@ export default function JournalModal({
           setCalendarComment(comment);
           setSelectedIcons(iconsList);
           
-          // Load AI comment from localStorage if entry exists
+          // Load AI comment from Supabase if entry exists
           if (entry) {
-            const aiData = getLocalAIComment(entry.id);
+            const aiData = await getAICommentForEntry(entry.id);
             if (!cancelled && aiData) {
               setAiComment(aiData);
-              const messages = getLocalAIChatMessages(aiData.id);
+              const messages = await getAIChatMessagesFromDB(aiData.id);
               if (!cancelled) setAiChatMessages(messages);
             }
           }
@@ -154,9 +154,11 @@ export default function JournalModal({
     setShowSaveMenu(false);
     
     try {
-      // Save calendar decorations to localStorage
-      saveLocalCalendarComment(currentUserId, date, calendarComment);
-      saveLocalCalendarIcons(currentUserId, date, selectedIcons);
+      // Save calendar decorations to Supabase
+      await Promise.all([
+        saveCalendarCommentForDate(currentUserId, date, calendarComment),
+        saveCalendarIconsForDate(currentUserId, date, selectedIcons),
+      ]);
       
       // Save journal entry
       const savedEntry = await saveEntry(currentUserId, date, content);
@@ -168,12 +170,12 @@ export default function JournalModal({
         try {
           if (mode === 'score') {
             const aiResponse = await generateAICommentWithScore(content);
-            const saved = saveLocalAIComment(savedEntry.id, currentUserId, aiResponse.comment, aiResponse.score ?? 85, true);
+            const saved = await saveAICommentForEntry(savedEntry.id, currentUserId, aiResponse.comment, aiResponse.score ?? 85, true);
             setAiComment(saved);
             showToast(`Entry saved! Score: ${aiResponse.score}/100`, 'success');
           } else {
             const commentText = await generateAIComment(content);
-            const saved = saveLocalAIComment(savedEntry.id, currentUserId, commentText, null, true);
+            const saved = await saveAICommentForEntry(savedEntry.id, currentUserId, commentText, null, true);
             setAiComment(saved);
             showToast('Entry saved with AI comment!', 'success');
           }
@@ -231,12 +233,17 @@ export default function JournalModal({
     );
   };
 
-  const handleToggleVisibility = () => {
-    if (!aiComment || !existingEntry) return;
-    const updated = updateLocalAICommentVisibility(existingEntry.id, !aiComment.is_public);
-    if (updated) {
-      setAiComment(updated);
-      showToast(aiComment.is_public ? 'AI content set to private' : 'AI content set to public', 'info');
+  const handleToggleVisibility = async () => {
+    if (!aiComment) return;
+    try {
+      const updated = await updateAICommentVisibilityInDB(aiComment.id, !aiComment.is_public);
+      if (updated) {
+        setAiComment(updated);
+        showToast(aiComment.is_public ? 'AI content set to private' : 'AI content set to public', 'info');
+      }
+    } catch (err) {
+      console.error('Failed to update visibility:', err);
+      showToast('Failed to update visibility.', 'error');
     }
   };
 
@@ -245,8 +252,8 @@ export default function JournalModal({
     setIsSendingChat(true);
     
     try {
-      // Save user message locally
-      const userMsg = saveLocalAIChatMessage(aiComment.id, 'user', newChatMessage);
+      // Save user message to Supabase
+      const userMsg = await saveAIChatMessageToDB(aiComment.id, 'user', newChatMessage);
       setAiChatMessages(prev => [...prev, userMsg]);
       const msgText = newChatMessage;
       setNewChatMessage('');
@@ -258,8 +265,8 @@ export default function JournalModal({
         msgText
       );
       
-      // Save AI response locally
-      const aiMsg = saveLocalAIChatMessage(aiComment.id, 'assistant', aiResponse);
+      // Save AI response to Supabase
+      const aiMsg = await saveAIChatMessageToDB(aiComment.id, 'assistant', aiResponse);
       setAiChatMessages(prev => [...prev, aiMsg]);
     } catch (err) {
       console.error('Chat failed:', err);
@@ -273,7 +280,6 @@ export default function JournalModal({
     const file = e.target.files?.[0];
     if (!file) return;
     
-    // Validate file size (max 10MB for images, 5MB for videos)
     const maxSize = type === 'image' ? 10 * 1024 * 1024 : 5 * 1024 * 1024;
     if (file.size > maxSize) {
       showToast(`File too large. Maximum size is ${maxSize / 1024 / 1024}MB.`, 'error');
@@ -354,7 +360,7 @@ export default function JournalModal({
                   <span className="text-sm font-medium text-foreground">Calendar Decorations</span>
                 </div>
                 
-                {/* Comment input (max 5 Chinese chars) */}
+                {/* Comment input */}
                 <div className="mb-3">
                   <label className="text-xs text-muted-foreground mb-1 block">Short Label</label>
                   <input
