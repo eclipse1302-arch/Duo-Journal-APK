@@ -146,7 +146,6 @@
   - 数据库:  PostgreSQL + Row Level Security
   - 实时:    Supabase Realtime (WebSocket)
 AI 服务:     魔搭社区 ModelScope API (Qwen/Qwen3-8B)
-本地存储:    localStorage (日历装饰 / AI 评论 / 聊天记录)
 媒体处理:    客户端 Canvas 压缩 + Base64 内嵌
 部署:        魔搭社区创空间 (Docker) / Vercel / ngrok
 版本控制:    Git + GitHub
@@ -178,7 +177,7 @@ AI 服务:     魔搭社区 ModelScope API (Qwen/Qwen3-8B)
 │       │  ┌──────┴─────┐ ┌──────┴─────┐ │                │
 │       │  │calendar-   │ │ai-storage  │ │                │
 │       │  │storage.ts  │ │.ts         │ │                │
-│       │  │(localStorage│ │(localStorage│ │                │
+│       │  │(Supabase   │ │(Supabase   │ │                │
 │       │  │ 日历装饰)   │ │ AI数据)    │ │                │
 │       │  └────────────┘ └────────────┘ │                │
 │       └────────────────┬───────────────┘                │
@@ -233,15 +232,39 @@ partner_requests  -- 伙伴请求
 ├── break_requester_id  -- 断开发起方
 ├── created_at
 └── updated_at
-```
 
-**localStorage 数据结构（无需数据库表）：**
+calendar_comments -- 日历短评
+├── id            -- UUID
+├── user_id       -- 关联 profiles
+├── date          -- 日期 (UNIQUE with user_id)
+├── comment       -- 短评文字
+├── created_at
+└── updated_at
 
-```
-duo-journal-calendar-comments   -- 日历短评 { userId: { date: comment } }
-duo-journal-calendar-icons      -- 日历贴纸 { userId: { date: string[] } }
-duo-journal-ai-comments         -- AI评论   { entryId: AIComment }
-duo-journal-ai-chat             -- AI对话   { aiCommentId: AIChatMessage[] }
+calendar_icons    -- 日历贴纸
+├── id            -- UUID
+├── user_id       -- 关联 profiles
+├── date          -- 日期 (UNIQUE with user_id)
+├── icons         -- TEXT[] 贴纸数组 (最多5个)
+├── created_at
+└── updated_at
+
+ai_comments       -- AI 评论
+├── id            -- UUID
+├── entry_id      -- 关联 journal_entries (UNIQUE)
+├── user_id       -- 关联 profiles
+├── comment       -- AI 生成的评论文字
+├── score         -- 状态评分 (0-100, 可选)
+├── is_public     -- 是否对伙伴公开 (默认 true)
+├── created_at
+└── updated_at
+
+ai_chat_messages  -- AI 多轮对话
+├── id            -- UUID
+├── ai_comment_id -- 关联 ai_comments
+├── role          -- user / assistant
+├── content       -- 消息内容
+└── created_at
 ```
 
 ### 4.4 安全机制
@@ -253,6 +276,10 @@ duo-journal-ai-chat             -- AI对话   { aiCommentId: AIChatMessage[] }
 | profiles | 所有人可读，仅本人可写 |
 | journal_entries | 本人可读写；已连接的伙伴可读 |
 | partner_requests | 仅请求双方可见/操作 |
+| calendar_comments | 本人可读写；已连接的伙伴可读 |
+| calendar_icons | 本人可读写；已连接的伙伴可读 |
+| ai_comments | 本人可读写；已连接的伙伴可读公开 (is_public=true) 的评论 |
+| ai_chat_messages | 仅父级 ai_comment 的所有者可读写 |
 
 **认证方案：**
 - 用户名自动转换为内部邮箱格式 `username@duo.journal`
@@ -289,8 +316,8 @@ duo-journal-ai-chat             -- AI对话   { aiCommentId: AIChatMessage[] }
                     │ JSON Response
             ┌───────▼────────┐
             │ ai-storage.ts  │
-            │ localStorage   │
-            │  持久化存储     │
+            │  Supabase      │
+            │  云端持久化存储  │
             └────────────────┘
 ```
 
@@ -314,7 +341,7 @@ duo-journal-ai-chat             -- AI对话   { aiCommentId: AIChatMessage[] }
 
 | 特色 | 说明 |
 |------|------|
-| 纯前端架构 | 无需自建后端服务器，Supabase + localStorage 提供全部后端能力 |
+| 纯前端架构 | 无需自建后端服务器，Supabase 提供全部后端能力 |
 | AI 情感引擎 | 基于 Qwen3-8B 大模型的日记情感分析、评分与多轮对话 |
 | 设计令牌系统 | CSS 变量定义所有颜色/间距/阴影，一处修改全局生效 |
 | 组件化开发 | 每个功能模块独立为 React 组件，职责单一，易于维护 |
@@ -322,7 +349,7 @@ duo-journal-ai-chat             -- AI对话   { aiCommentId: AIChatMessage[] }
 | 实时订阅 | 利用 PostgreSQL 的 LISTEN/NOTIFY + WebSocket 实现伙伴请求实时推送 |
 | 客户端媒体处理 | 图片压缩 + Base64 内嵌，无需额外存储桶配置 |
 | 渐进式 UX | 加载状态、骨架屏、Toast 提示，每个操作都有明确反馈 |
-| 混合存储策略 | 核心数据 (Supabase) + 辅助数据 (localStorage) 结合，降低外部依赖 |
+| 全量云端存储 | 所有数据（日记、日历装饰、AI 评论/对话）均存储在 Supabase，多设备/多用户实时同步 |
 
 ---
 
@@ -375,8 +402,8 @@ duo-journal/
 │   │   ├── supabase.ts             # Supabase 客户端实例
 │   │   ├── database.ts             # 数据库 CRUD 操作
 │   │   ├── ai-service.ts           # ModelScope AI API 调用
-│   │   ├── ai-storage.ts           # AI 评论/对话 localStorage 存储
-│   │   ├── calendar-storage.ts     # 日历短评/贴纸 localStorage 存储
+│   │   ├── ai-storage.ts           # AI 评论/对话 Supabase 存储
+│   │   ├── calendar-storage.ts     # 日历短评/贴纸 Supabase 存储
 │   │   ├── media-utils.ts          # 图片压缩 + 视频处理
 │   │   └── utils.ts                # 工具函数
 │   └── components/
@@ -418,6 +445,8 @@ duo-journal/
 npm install          # 安装依赖
 npm run dev          # 启动开发服务器 (含 AI 代理)
 npm run build        # 构建生产版本到 dist/
+```
+
 ### 方式三：Vercel 部署
 
 ```bash
