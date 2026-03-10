@@ -34,6 +34,26 @@ export interface CalendarIcon {
   updated_at: string;
 }
 
+// ── AI Style System ──────────────────────────────────────
+
+export type CommentStyle = 'Poetic' | 'Passionate' | 'Neutral';
+export type StylePreference = 'Auto' | CommentStyle;
+export type FeedbackValue = 1 | 0 | -1;
+
+export interface StyleMemory {
+  id: string;
+  user_id: string;
+  style_preference: StylePreference;
+  q_scores: Record<CommentStyle, number>;
+  w_weights: Record<CommentStyle, number>;
+  cooldown_counter: number;
+  last_used_style: CommentStyle | null;
+  consecutive_unused: Record<CommentStyle, number>;
+  feedback_log: Array<{ style: CommentStyle; feedback: FeedbackValue; timestamp: string }>;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface AIComment {
   id: string;
   entry_id: string;
@@ -41,6 +61,8 @@ export interface AIComment {
   comment: string;
   score: number | null;
   is_public: boolean;
+  style: CommentStyle | null;
+  feedback: FeedbackValue | null;
   created_at: string;
   updated_at: string;
 }
@@ -69,6 +91,19 @@ export interface PartnerRequestWithProfiles extends PartnerRequest {
 }
 
 export const AVATAR_OPTIONS = ['🌸', '🌊', '🌺', '🌿', '🌙', '⭐', '🦋', '🌻', '🍃', '🔥', '💜', '🧸'];
+
+export const STYLE_OPTIONS: Array<{
+  key: StylePreference;
+  icon: string;
+  label: string;
+  description: string;
+  color: string;
+}> = [
+  { key: 'Auto', icon: 'Sparkles', label: 'Auto', description: 'Let the system learn your taste', color: 'bg-surface' },
+  { key: 'Poetic', icon: 'Feather', label: 'Poetic', description: 'Literary & contemplative', color: 'bg-purple-100' },
+  { key: 'Passionate', icon: 'Flame', label: 'Passionate', description: 'Warm & energetic', color: 'bg-orange-100' },
+  { key: 'Neutral', icon: 'Scale', label: 'Neutral', description: 'Balanced & calm', color: 'bg-blue-100' },
+];
 
 export const CALENDAR_ICONS = [
   { emoji: '❤️', label: '爱心', description: '情人节/恋爱' },

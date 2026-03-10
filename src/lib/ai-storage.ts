@@ -2,7 +2,7 @@
 // Data syncs across all devices and users.
 
 import { supabase } from './supabase';
-import type { AIComment, AIChatMessage } from '../types';
+import type { AIComment, AIChatMessage, CommentStyle, FeedbackValue } from '../types';
 
 // ── AI Comments ───────────────────────────────────────────
 
@@ -20,7 +20,8 @@ export async function saveAICommentForEntry(
   userId: string,
   comment: string,
   score: number | null,
-  isPublic: boolean = true
+  isPublic: boolean = true,
+  style: CommentStyle | null = null
 ): Promise<AIComment> {
   const { data: existing } = await supabase
     .from('ai_comments')
@@ -35,6 +36,8 @@ export async function saveAICommentForEntry(
         comment,
         score,
         is_public: isPublic,
+        style,
+        feedback: null, // reset feedback when comment is regenerated
         updated_at: new Date().toISOString(),
       })
       .eq('id', existing.id)
@@ -46,11 +49,22 @@ export async function saveAICommentForEntry(
 
   const { data, error } = await supabase
     .from('ai_comments')
-    .insert({ entry_id: entryId, user_id: userId, comment, score, is_public: isPublic })
+    .insert({ entry_id: entryId, user_id: userId, comment, score, is_public: isPublic, style })
     .select()
     .single();
   if (error) throw error;
   return data;
+}
+
+export async function updateAICommentFeedback(
+  aiCommentId: string,
+  feedback: FeedbackValue
+): Promise<void> {
+  const { error } = await supabase
+    .from('ai_comments')
+    .update({ feedback, updated_at: new Date().toISOString() })
+    .eq('id', aiCommentId);
+  if (error) throw error;
 }
 
 export async function updateAICommentVisibilityInDB(

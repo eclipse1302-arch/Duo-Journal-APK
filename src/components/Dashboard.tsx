@@ -1,12 +1,14 @@
-import { useState, useEffect, useCallback, useReducer } from 'react';
+import { useState, useEffect, useCallback, useReducer, useRef } from 'react';
 import { BookHeart, LogOut, RefreshCw, Link, Bell, Key, ChevronDown } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { getActivePartner, getPendingIncomingRequests, getEntryCount } from '../lib/database';
+import { getOrCreateStyleMemory, updateStylePreference } from '../lib/style-memory-storage';
 import Calendar from './Calendar';
 import JournalModal from './JournalModal';
 import PartnerPanel from './PartnerPanel';
 import ChangePasswordModal from './ChangePasswordModal';
-import type { Profile, PartnerRequest } from '../types';
+import StyleSelector from './StyleSelector';
+import type { Profile, PartnerRequest, StyleMemory, StylePreference } from '../types';
 
 export default function Dashboard() {
   const { user, profile, signOut } = useAuth();
@@ -21,9 +23,12 @@ export default function Dashboard() {
   const [showPartnerPanel, setShowPartnerPanel] = useState(false);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
+  const [styleMemory, setStyleMemory] = useState<StyleMemory | null>(null);
 
   const [myEntryCount, setMyEntryCount] = useState(0);
   const [partnerEntryCount, setPartnerEntryCount] = useState(0);
+
+  const menuRef = useRef<HTMLDivElement>(null);
 
   const userId = user?.id;
   const isViewingPartner = viewingUserId !== userId;
@@ -63,12 +68,25 @@ export default function Dashboard() {
       setViewingUserId(userId);
       setViewingProfile(profile);
       loadPartnerData();
+      getOrCreateStyleMemory(userId).then(setStyleMemory).catch(console.error);
     }
   }, [userId, profile, loadPartnerData]);
 
   useEffect(() => {
     loadCounts();
   }, [loadCounts, refreshTick]);
+
+  // Close user menu on click outside
+  useEffect(() => {
+    if (!showUserMenu) return;
+    const handler = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setShowUserMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [showUserMenu]);
 
   // Update viewing profile when switching views
   useEffect(() => {
@@ -108,6 +126,17 @@ export default function Dashboard() {
     forceRefresh();
   }, [loadPartnerData]);
 
+  const handleStyleChange = useCallback(async (preference: StylePreference) => {
+    if (!userId) return;
+    try {
+      await updateStylePreference(userId, preference);
+      setStyleMemory(prev => prev ? { ...prev, style_preference: preference } : prev);
+    } catch (err) {
+      console.error('Failed to update style preference:', err);
+      throw err;
+    }
+  }, [userId]);
+
   if (!userId || !profile || !viewingUserId) return null;
 
   return (
@@ -140,7 +169,7 @@ export default function Dashboard() {
             </button>
 
             {/* User indicator with dropdown */}
-            <div className="relative">
+            <div className="relative" ref={menuRef}>
               <button
                 onClick={() => setShowUserMenu(!showUserMenu)}
                 className="hidden sm:flex items-center gap-2 text-sm text-muted-foreground px-2 py-1 rounded-lg hover:bg-surface transition-colors"
@@ -151,34 +180,34 @@ export default function Dashboard() {
               </button>
               
               {showUserMenu && (
-                <>
-                  <div 
-                    className="fixed inset-0 z-40" 
-                    onClick={() => setShowUserMenu(false)} 
+                <div className="absolute right-0 top-full mt-1 w-64 py-1 rounded-lg bg-card border border-border shadow-elevated z-50">
+                  <button
+                    onClick={() => {
+                      setShowUserMenu(false);
+                      setShowPasswordModal(true);
+                    }}
+                    className="w-full px-4 py-2 text-left text-sm hover:bg-surface flex items-center gap-2"
+                  >
+                    <Key className="w-4 h-4" />
+                    Change Password
+                  </button>
+                  <div className="border-t border-border my-1" />
+                  <StyleSelector
+                    current={styleMemory?.style_preference ?? 'Auto'}
+                    onSelect={handleStyleChange}
                   />
-                  <div className="absolute right-0 top-full mt-1 w-48 py-1 rounded-lg bg-card border border-border shadow-elevated z-50">
-                    <button
-                      onClick={() => {
-                        setShowUserMenu(false);
-                        setShowPasswordModal(true);
-                      }}
-                      className="w-full px-4 py-2 text-left text-sm hover:bg-surface flex items-center gap-2"
-                    >
-                      <Key className="w-4 h-4" />
-                      Change Password
-                    </button>
-                    <button
-                      onClick={() => {
-                        setShowUserMenu(false);
-                        handleLogout();
-                      }}
-                      className="w-full px-4 py-2 text-left text-sm hover:bg-surface flex items-center gap-2 text-destructive"
-                    >
-                      <LogOut className="w-4 h-4" />
-                      Log Out
-                    </button>
-                  </div>
-                </>
+                  <div className="border-t border-border my-1" />
+                  <button
+                    onClick={() => {
+                      setShowUserMenu(false);
+                      handleLogout();
+                    }}
+                    className="w-full px-4 py-2 text-left text-sm hover:bg-surface flex items-center gap-2 text-destructive"
+                  >
+                    <LogOut className="w-4 h-4" />
+                    Log Out
+                  </button>
+                </div>
               )}
             </div>
 
@@ -291,6 +320,8 @@ export default function Dashboard() {
           currentProfile={profile}
           viewingProfile={viewingProfile}
           partnerProfile={activePartner?.partner ?? null}
+          styleMemory={styleMemory}
+          onStyleMemoryUpdated={setStyleMemory}
           onClose={handleModalClose}
           onSaved={handleSaved}
         />

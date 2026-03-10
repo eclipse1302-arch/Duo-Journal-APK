@@ -1,12 +1,12 @@
 import { useState, useEffect, useRef } from 'react';
-import { X, Save, Trash2, BookOpen, PenLine, Loader2, MessageSquare, Star, ChevronDown, Lock, Unlock, Send, Image, Video, Sticker } from 'lucide-react';
+import { X, Save, Trash2, BookOpen, PenLine, Loader2, MessageSquare, Star, ChevronDown, Lock, Unlock, Send, Image, Video, Sticker, Feather, Flame, Scale } from 'lucide-react';
 import { useToast } from './Toast';
 import { 
   getEntryByDate, saveEntry, deleteEntry, 
 } from '../lib/database';
 import {
   getAICommentForEntry, saveAICommentForEntry, updateAICommentVisibilityInDB,
-  getAIChatMessagesFromDB, saveAIChatMessageToDB
+  updateAICommentFeedback, getAIChatMessagesFromDB, saveAIChatMessageToDB
 } from '../lib/ai-storage';
 import {
   getCalendarCommentForDate, saveCalendarCommentForDate,
@@ -14,7 +14,11 @@ import {
 } from '../lib/calendar-storage';
 import { processImage, processVideo } from '../lib/media-utils';
 import { generateAIComment, generateAICommentWithScore, continueConversation } from '../lib/ai-service';
-import type { Profile, JournalEntry, AIComment, AIChatMessage } from '../types';
+import {
+  resolveStyle, updateMemoryAfterGeneration, processFeedback, saveStyleMemory
+} from '../lib/style-memory-storage';
+import FeedbackButtons from './FeedbackButtons';
+import type { Profile, JournalEntry, AIComment, AIChatMessage, StyleMemory, CommentStyle, FeedbackValue } from '../types';
 import { CALENDAR_ICONS } from '../types';
 
 interface JournalModalProps {
@@ -24,6 +28,8 @@ interface JournalModalProps {
   currentProfile: Profile;
   viewingProfile: Profile | null;
   partnerProfile: Profile | null;
+  styleMemory: StyleMemory | null;
+  onStyleMemoryUpdated: (memory: StyleMemory) => void;
   onClose: () => void;
   onSaved: () => void;
 }
@@ -46,6 +52,8 @@ export default function JournalModal({
   currentProfile,
   viewingProfile,
   partnerProfile,
+  styleMemory,
+  onStyleMemoryUpdated,
   onClose,
   onSaved,
 }: JournalModalProps) {
@@ -168,17 +176,28 @@ export default function JournalModal({
       if (mode === 'comment' || mode === 'score') {
         setIsGeneratingAI(true);
         try {
+          // Resolve which style to use from memory
+          const usedStyle: CommentStyle = styleMemory ? resolveStyle(styleMemory) : 'Neutral';
+
           if (mode === 'score') {
-            const aiResponse = await generateAICommentWithScore(content);
-            const saved = await saveAICommentForEntry(savedEntry.id, currentUserId, aiResponse.comment, aiResponse.score ?? 85, true);
+            const aiResponse = await generateAICommentWithScore(content, usedStyle);
+            const saved = await saveAICommentForEntry(savedEntry.id, currentUserId, aiResponse.comment, aiResponse.score ?? 85, true, usedStyle);
             setAiComment(saved);
             showToast(`Entry saved! Score: ${aiResponse.score}/100`, 'success');
           } else {
-            const commentText = await generateAIComment(content);
-            const saved = await saveAICommentForEntry(savedEntry.id, currentUserId, commentText, null, true);
+            const commentText = await generateAIComment(content, usedStyle);
+            const saved = await saveAICommentForEntry(savedEntry.id, currentUserId, commentText, null, true, usedStyle);
             setAiComment(saved);
             showToast('Entry saved with AI comment!', 'success');
           }
+
+          // Update style memory after generation
+          if (styleMemory) {
+            const updated = updateMemoryAfterGeneration(styleMemory, usedStyle);
+            await saveStyleMemory(currentUserId, updated);
+            onStyleMemoryUpdated(updated);
+          }
+
           setShowAIChat(true);
         } catch (aiErr) {
           console.error('AI generation failed:', aiErr);
@@ -262,7 +281,8 @@ export default function JournalModal({
       const aiResponse = await continueConversation(
         existingEntry.content,
         aiChatMessages.map(m => ({ role: m.role, content: m.content })),
-        msgText
+        msgText,
+        aiComment.style ?? 'Neutral'
       );
       
       // Save AI response to Supabase
@@ -315,6 +335,30 @@ export default function JournalModal({
 
   // Check if partner can see AI content
   const canPartnerSeeAI = aiComment?.is_public ?? true;
+
+  const handleFeedback = async (value: FeedbackValue) => {
+    if (!aiComment || !styleMemory) return;
+    try {
+      await updateAICommentFeedback(aiComment.id, value);
+      setAiComment(prev => prev ? { ...prev, feedback: value } : prev);
+      const style = aiComment.style ?? 'Neutral';
+      const updated = processFeedback(styleMemory, style, value);
+      await saveStyleMemory(currentUserId, updated);
+      onStyleMemoryUpdated(updated);
+    } catch (err) {
+      console.error('Failed to save feedback:', err);
+      showToast('Failed to save feedback.', 'error');
+    }
+  };
+
+  const styleIcon = (style: CommentStyle | null) => {
+    switch (style) {
+      case 'Poetic': return <Feather className="w-3.5 h-3.5" />;
+      case 'Passionate': return <Flame className="w-3.5 h-3.5" />;
+      case 'Neutral': return <Scale className="w-3.5 h-3.5" />;
+      default: return null;
+    }
+  };
 
   return (
     <>
@@ -478,6 +522,12 @@ export default function JournalModal({
                     <div className="flex items-center gap-2">
                       <MessageSquare className="w-4 h-4 text-primary" />
                       <span className="text-sm font-medium text-foreground">AI Companion</span>
+                      {aiComment.style && (
+                        <span className="flex items-center gap-1 text-xs text-muted-foreground bg-surface px-1.5 py-0.5 rounded-full">
+                          {styleIcon(aiComment.style)}
+                          {aiComment.style}
+                        </span>
+                      )}
                       {aiComment.score !== null && (
                         <span className="flex items-center gap-1 text-sm font-semibold text-primary">
                           <Star className="w-4 h-4 fill-current" />
@@ -500,6 +550,12 @@ export default function JournalModal({
                   <p className="text-sm text-foreground leading-relaxed whitespace-pre-wrap">
                     {aiComment.comment}
                   </p>
+
+                  {/* Feedback buttons */}
+                  <FeedbackButtons
+                    currentFeedback={aiComment.feedback}
+                    onFeedback={handleFeedback}
+                  />
                   
                   {/* Chat toggle */}
                   <button
@@ -596,6 +652,12 @@ export default function JournalModal({
                       <div className="flex items-center gap-2 mb-2">
                         <MessageSquare className="w-4 h-4 text-secondary" />
                         <span className="text-sm font-medium text-foreground">AI Companion</span>
+                        {aiComment.style && (
+                          <span className="flex items-center gap-1 text-xs text-muted-foreground bg-surface px-1.5 py-0.5 rounded-full">
+                            {styleIcon(aiComment.style)}
+                            {aiComment.style}
+                          </span>
+                        )}
                         {aiComment.score !== null && (
                           <span className="flex items-center gap-1 text-sm font-semibold text-secondary">
                             <Star className="w-4 h-4 fill-current" />

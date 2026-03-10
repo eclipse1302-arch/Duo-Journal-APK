@@ -221,3 +221,30 @@ CREATE POLICY "Users can manage own AI chat messages" ON ai_chat_messages
 -- This is required because we use username-based auth
 -- with generated email addresses.
 -- ============================================
+
+-- ============================================
+-- 8. Style memory table (per-user AI style adaptation)
+-- ============================================
+CREATE TABLE IF NOT EXISTS style_memory (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id UUID REFERENCES profiles(id) ON DELETE CASCADE NOT NULL UNIQUE,
+  style_preference TEXT NOT NULL DEFAULT 'Auto'
+    CHECK (style_preference IN ('Auto', 'Poetic', 'Passionate', 'Neutral')),
+  q_scores JSONB NOT NULL DEFAULT '{"Poetic": 0, "Passionate": 0, "Neutral": 0}',
+  w_weights JSONB NOT NULL DEFAULT '{"Poetic": 0.333, "Passionate": 0.333, "Neutral": 0.334}',
+  cooldown_counter INTEGER NOT NULL DEFAULT 0,
+  last_used_style TEXT,
+  consecutive_unused JSONB NOT NULL DEFAULT '{"Poetic": 0, "Passionate": 0, "Neutral": 0}',
+  feedback_log JSONB NOT NULL DEFAULT '[]',
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+ALTER TABLE style_memory ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Users can manage own style memory" ON style_memory;
+CREATE POLICY "Users can manage own style memory" ON style_memory
+  FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+
+-- Add style + feedback columns to ai_comments
+ALTER TABLE ai_comments ADD COLUMN IF NOT EXISTS style TEXT;
+ALTER TABLE ai_comments ADD COLUMN IF NOT EXISTS feedback INTEGER;

@@ -13,6 +13,12 @@ export default defineConfig({
   server: {
     allowedHosts: true,
     proxy: {
+      // Agent endpoints → Python backend (app.py running on port 7860)
+      '/api/agent': {
+        target: 'http://localhost:7860',
+        changeOrigin: true,
+      },
+      // Legacy raw AI proxy (kept as fallback)
       '/api/ai': {
         target: 'https://api-inference.modelscope.cn',
         changeOrigin: true,
