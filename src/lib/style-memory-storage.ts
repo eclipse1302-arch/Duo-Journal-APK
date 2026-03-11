@@ -1,7 +1,8 @@
 // Supabase-based storage for per-user AI style memory.
 // Also contains pure business-logic functions for style selection and feedback processing.
 //
-// IMPORTANT: The `style_memory` table must exist in Supabase.
+// Gracefully handles missing `style_memory` table: falls back to in-memory defaults
+// so the app works before the database migration is run.
 // See supabase-setup.sql (section 8) for the CREATE TABLE statement.
 
 import { supabase } from './supabase';
@@ -14,67 +15,108 @@ const EPSILON = 0.1;   // exploration bonus
 const UNUSED_THRESHOLD = 5; // consecutive entries before exploration kicks in
 const MAX_LOG = 50;    // max feedback log entries
 
-const DEFAULT_MEMORY: Omit<StyleMemory, 'id' | 'user_id' | 'created_at' | 'updated_at'> = {
-  style_preference: 'Auto',
-  q_scores: { Poetic: 0, Passionate: 0, Neutral: 0 },
-  w_weights: { Poetic: 0.333, Passionate: 0.333, Neutral: 0.334 },
-  cooldown_counter: 0,
-  last_used_style: null,
-  consecutive_unused: { Poetic: 0, Passionate: 0, Neutral: 0 },
-  feedback_log: [],
-};
+function makeDefault(userId: string): StyleMemory {
+  return {
+    id: `local-${userId}`,
+    user_id: userId,
+    style_preference: 'Auto',
+    q_scores: { Poetic: 0, Passionate: 0, Neutral: 0 },
+    w_weights: { Poetic: 0.333, Passionate: 0.333, Neutral: 0.334 },
+    cooldown_counter: 0,
+    last_used_style: null,
+    consecutive_unused: { Poetic: 0, Passionate: 0, Neutral: 0 },
+    feedback_log: [],
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+}
 
-// ── Supabase CRUD ──────────────────────────────────────────
+/** Fields safe to INSERT into Supabase (no id — let DB generate UUID). */
+function insertPayload(userId: string) {
+  return {
+    user_id: userId,
+    style_preference: 'Auto' as const,
+    q_scores: { Poetic: 0, Passionate: 0, Neutral: 0 },
+    w_weights: { Poetic: 0.333, Passionate: 0.333, Neutral: 0.334 },
+    cooldown_counter: 0,
+    last_used_style: null as string | null,
+    consecutive_unused: { Poetic: 0, Passionate: 0, Neutral: 0 },
+    feedback_log: [] as unknown[],
+  };
+}
+
+// ── Supabase CRUD (with graceful fallback) ─────────────────
 
 export async function getOrCreateStyleMemory(userId: string): Promise<StyleMemory> {
-  const { data, error } = await supabase
-    .from('style_memory')
-    .select('*')
-    .eq('user_id', userId)
-    .maybeSingle();
+  try {
+    const { data, error } = await supabase
+      .from('style_memory')
+      .select('*')
+      .eq('user_id', userId)
+      .maybeSingle();
 
-  if (error) throw error;
-  if (data) return data as StyleMemory;
+    if (error) throw error;
+    if (data) return data as StyleMemory;
 
-  // Create default row
-  const { data: created, error: insertErr } = await supabase
-    .from('style_memory')
-    .insert({ user_id: userId, ...DEFAULT_MEMORY })
-    .select()
-    .single();
+    // Create default row
+    const { data: created, error: insertErr } = await supabase
+      .from('style_memory')
+      .insert(insertPayload(userId))
+      .select()
+      .single();
 
-  if (insertErr) throw insertErr;
-  return created as StyleMemory;
+    if (insertErr) throw insertErr;
+    return created as StyleMemory;
+  } catch (err) {
+    console.warn('style_memory table unavailable, using defaults:', err);
+    return makeDefault(userId);
+  }
 }
 
 export async function updateStylePreference(
   userId: string,
   preference: StylePreference
 ): Promise<void> {
-  const { error } = await supabase
-    .from('style_memory')
-    .update({ style_preference: preference, updated_at: new Date().toISOString() })
-    .eq('user_id', userId);
-  if (error) throw error;
+  try {
+    // Try upsert so it works even if no row exists yet
+    const { error } = await supabase
+      .from('style_memory')
+      .upsert(
+        { user_id: userId, style_preference: preference, updated_at: new Date().toISOString() },
+        { onConflict: 'user_id' }
+      );
+    if (error) throw error;
+  } catch (err) {
+    console.warn('style_memory update failed (table may not exist):', err);
+    // Don't throw — let the UI update optimistically
+  }
 }
 
 export async function saveStyleMemory(
   userId: string,
   memory: StyleMemory
 ): Promise<void> {
-  const { error } = await supabase
-    .from('style_memory')
-    .update({
-      q_scores: memory.q_scores,
-      w_weights: memory.w_weights,
-      cooldown_counter: memory.cooldown_counter,
-      last_used_style: memory.last_used_style,
-      consecutive_unused: memory.consecutive_unused,
-      feedback_log: memory.feedback_log,
-      updated_at: new Date().toISOString(),
-    })
-    .eq('user_id', userId);
-  if (error) throw error;
+  try {
+    const { error } = await supabase
+      .from('style_memory')
+      .upsert(
+        {
+          user_id: userId,
+          q_scores: memory.q_scores,
+          w_weights: memory.w_weights,
+          cooldown_counter: memory.cooldown_counter,
+          last_used_style: memory.last_used_style,
+          consecutive_unused: memory.consecutive_unused,
+          feedback_log: memory.feedback_log,
+          style_preference: memory.style_preference,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'user_id' }
+      );
+    if (error) throw error;
+  } catch (err) {
+    console.warn('style_memory save failed (table may not exist):', err);
+  }
 }
 
 // ── Pure business logic (no DB) ────────────────────────────

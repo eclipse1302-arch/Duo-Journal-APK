@@ -19,9 +19,8 @@ import urllib.error
 # ── LLM backend configuration ──────────────────────────────
 
 MODELSCOPE_API_URL = "https://api-inference.modelscope.cn/v1/chat/completions"
-MODELSCOPE_API_KEY = os.environ.get(
-    "MODELSCOPE_API_KEY", "ms-6b6c4445-94af-4f2d-b04c-5b45989866aa"
-)
+_env_key = os.environ.get("MODELSCOPE_API_KEY", "")
+MODELSCOPE_API_KEY = _env_key if _env_key else "ms-6b6c4445-94af-4f2d-b04c-5b45989866aa"
 MODEL_ID = os.environ.get("MODEL_ID", "Qwen/Qwen3-8B")
 
 VALID_STYLES = {"Poetic", "Passionate", "Neutral"}

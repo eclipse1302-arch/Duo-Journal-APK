@@ -11,7 +11,9 @@ COPY agentconfig/ /app/agentconfig/
 COPY agent.py /app/agent.py
 COPY app.py /app/app.py
 
-ENV MODELSCOPE_API_KEY=""
+# Leave unset so agent.py uses its built-in default key.
+# Override at runtime: docker run -e MODELSCOPE_API_KEY=your-key ...
+# ENV MODELSCOPE_API_KEY=""
 
 EXPOSE 7860
 

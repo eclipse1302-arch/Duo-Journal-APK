@@ -124,7 +124,10 @@ export default function PartnerPanel({ open, onClose, onPartnerChanged }: Partne
       await loadData();
       onPartnerChanged();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Failed to accept.';
+      console.error('Accept failed:', err);
+      const msg = err instanceof Error ? err.message
+        : (typeof err === 'object' && err && 'message' in err) ? String((err as { message: unknown }).message)
+        : 'Failed to accept.';
       showToast(msg, 'error');
     }
   };
@@ -135,7 +138,9 @@ export default function PartnerPanel({ open, onClose, onPartnerChanged }: Partne
       showToast('Request declined.', 'info');
       await loadData();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Failed to decline.';
+      const msg = err instanceof Error ? err.message
+        : (typeof err === 'object' && err && 'message' in err) ? String((err as { message: unknown }).message)
+        : 'Failed to decline.';
       showToast(msg, 'error');
     }
   };

@@ -70,22 +70,14 @@ export async function saveEntry(
   date: string,
   content: string
 ): Promise<JournalEntry> {
-  const existing = await getEntryByDate(userId, date);
-
-  if (existing) {
-    const { data, error } = await supabase
-      .from('journal_entries')
-      .update({ content, updated_at: new Date().toISOString() })
-      .eq('id', existing.id)
-      .select()
-      .single();
-    if (error) throw error;
-    return data;
-  }
-
+  // Use upsert to atomically insert-or-update.
+  // Eliminates the race condition of separate SELECT → INSERT/UPDATE.
   const { data, error } = await supabase
     .from('journal_entries')
-    .insert({ user_id: userId, date, content })
+    .upsert(
+      { user_id: userId, date, content, updated_at: new Date().toISOString() },
+      { onConflict: 'user_id,date' }
+    )
     .select()
     .single();
   if (error) throw error;
@@ -136,14 +128,14 @@ export async function getEntryCount(userId: string): Promise<number> {
 export async function getActivePartner(
   userId: string
 ): Promise<{ request: PartnerRequest; partner: Profile } | null> {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from('partner_requests')
     .select('*')
     .or(`from_user_id.eq.${userId},to_user_id.eq.${userId}`)
     .in('status', ['accepted', 'break_pending'])
     .maybeSingle();
 
-  if (!data) return null;
+  if (error || !data) return null;
 
   const partnerId = data.from_user_id === userId ? data.to_user_id : data.from_user_id;
   const partner = await getProfile(partnerId);
@@ -239,69 +231,44 @@ export async function sendPartnerRequest(
 }
 
 export async function acceptRequest(requestId: string): Promise<void> {
-  // Before accepting, check if the accepting user already has an active partner
-  const { data: request } = await supabase
-    .from('partner_requests')
-    .select('*')
-    .eq('id', requestId)
-    .single();
-
-  if (!request) throw new Error('Request not found.');
-
-  const myPartner = await getActivePartner(request.to_user_id);
-  if (myPartner) throw new Error('You already have an active partner.');
-
-  const theirPartner = await getActivePartner(request.from_user_id);
-  if (theirPartner) throw new Error('The other user already has an active partner.');
-
-  const { error } = await supabase
-    .from('partner_requests')
-    .update({ status: 'accepted', updated_at: new Date().toISOString() })
-    .eq('id', requestId);
-  if (error) throw error;
+  // Use RPC (POST) instead of .update() (PATCH) for platform compatibility.
+  // Some hosting platforms block the HTTP PATCH method.
+  const { error } = await supabase.rpc('accept_partner_request', {
+    req_id: requestId,
+  });
+  if (error) throw new Error(error.message);
 }
 
 export async function rejectRequest(requestId: string): Promise<void> {
-  const { error } = await supabase
-    .from('partner_requests')
-    .delete()
-    .eq('id', requestId);
-  if (error) throw error;
+  const { error } = await supabase.rpc('reject_partner_request', {
+    req_id: requestId,
+  });
+  if (error) throw new Error(error.message);
 }
 
 export async function requestBreakLink(
   requestId: string,
   requesterId: string
 ): Promise<void> {
-  const { error } = await supabase
-    .from('partner_requests')
-    .update({
-      status: 'break_pending',
-      break_requester_id: requesterId,
-      updated_at: new Date().toISOString(),
-    })
-    .eq('id', requestId);
-  if (error) throw error;
+  const { error } = await supabase.rpc('request_break_link', {
+    req_id: requestId,
+    requester_id: requesterId,
+  });
+  if (error) throw new Error(error.message);
 }
 
 export async function confirmBreakLink(requestId: string): Promise<void> {
-  const { error } = await supabase
-    .from('partner_requests')
-    .delete()
-    .eq('id', requestId);
-  if (error) throw error;
+  const { error } = await supabase.rpc('confirm_break_link', {
+    req_id: requestId,
+  });
+  if (error) throw new Error(error.message);
 }
 
 export async function cancelBreakLink(requestId: string): Promise<void> {
-  const { error } = await supabase
-    .from('partner_requests')
-    .update({
-      status: 'accepted',
-      break_requester_id: null,
-      updated_at: new Date().toISOString(),
-    })
-    .eq('id', requestId);
-  if (error) throw error;
+  const { error } = await supabase.rpc('cancel_break_link', {
+    req_id: requestId,
+  });
+  if (error) throw new Error(error.message);
 }
 
 // ── Calendar Comments ─────────────────────────────────────

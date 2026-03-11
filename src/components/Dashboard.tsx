@@ -128,13 +128,8 @@ export default function Dashboard() {
 
   const handleStyleChange = useCallback(async (preference: StylePreference) => {
     if (!userId) return;
-    try {
-      await updateStylePreference(userId, preference);
-      setStyleMemory(prev => prev ? { ...prev, style_preference: preference } : prev);
-    } catch (err) {
-      console.error('Failed to update style preference:', err);
-      throw err;
-    }
+    await updateStylePreference(userId, preference);
+    setStyleMemory(prev => prev ? { ...prev, style_preference: preference } : prev);
   }, [userId]);
 
   if (!userId || !profile || !viewingUserId) return null;

@@ -29,30 +29,47 @@ export async function saveAICommentForEntry(
     .eq('entry_id', entryId)
     .maybeSingle();
 
+  const base = { comment, score, is_public: isPublic, style, feedback: null as number | null };
+
   if (existing) {
+    // Try with style/feedback columns first, fall back without
     const { data, error } = await supabase
       .from('ai_comments')
-      .update({
-        comment,
-        score,
-        is_public: isPublic,
-        style,
-        feedback: null, // reset feedback when comment is regenerated
-        updated_at: new Date().toISOString(),
-      })
+      .update({ ...base, updated_at: new Date().toISOString() })
       .eq('id', existing.id)
       .select()
       .single();
-    if (error) throw error;
+
+    if (error) {
+      // Retry without style/feedback in case columns don't exist yet
+      const { data: d2, error: e2 } = await supabase
+        .from('ai_comments')
+        .update({ comment, score, is_public: isPublic, updated_at: new Date().toISOString() })
+        .eq('id', existing.id)
+        .select()
+        .single();
+      if (e2) throw e2;
+      return d2;
+    }
     return data;
   }
 
   const { data, error } = await supabase
     .from('ai_comments')
-    .insert({ entry_id: entryId, user_id: userId, comment, score, is_public: isPublic, style })
+    .insert({ entry_id: entryId, user_id: userId, ...base })
     .select()
     .single();
-  if (error) throw error;
+
+  if (error) {
+    // Retry without style/feedback
+    const { data: d2, error: e2 } = await supabase
+      .from('ai_comments')
+      .insert({ entry_id: entryId, user_id: userId, comment, score, is_public: isPublic })
+      .select()
+      .single();
+    if (e2) throw e2;
+    return d2;
+  }
   return data;
 }
 
@@ -60,11 +77,15 @@ export async function updateAICommentFeedback(
   aiCommentId: string,
   feedback: FeedbackValue
 ): Promise<void> {
-  const { error } = await supabase
-    .from('ai_comments')
-    .update({ feedback, updated_at: new Date().toISOString() })
-    .eq('id', aiCommentId);
-  if (error) throw error;
+  try {
+    const { error } = await supabase
+      .from('ai_comments')
+      .update({ feedback, updated_at: new Date().toISOString() })
+      .eq('id', aiCommentId);
+    if (error) throw error;
+  } catch (err) {
+    console.warn('Failed to save feedback (column may not exist):', err);
+  }
 }
 
 export async function updateAICommentVisibilityInDB(
