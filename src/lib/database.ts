@@ -464,10 +464,11 @@ export async function updateAICommentVisibility(
   aiCommentId: string,
   isPublic: boolean
 ): Promise<void> {
-  const { error } = await supabase
-    .from('ai_comments')
-    .update({ is_public: isPublic, updated_at: new Date().toISOString() })
-    .eq('id', aiCommentId);
+  // Use RPC (POST) instead of .update() (PATCH) for platform compatibility.
+  const { error } = await supabase.rpc('update_ai_comment_visibility', {
+    comment_id: aiCommentId,
+    new_is_public: isPublic,
+  });
   if (error) throw error;
 }
 

@@ -248,3 +248,37 @@ CREATE POLICY "Users can manage own style memory" ON style_memory
 -- Add style + feedback columns to ai_comments
 ALTER TABLE ai_comments ADD COLUMN IF NOT EXISTS style TEXT;
 ALTER TABLE ai_comments ADD COLUMN IF NOT EXISTS feedback INTEGER;
+
+-- ============================================
+-- RPC: update_ai_comment_visibility
+-- Uses POST instead of PATCH for platform compatibility
+-- ============================================
+CREATE OR REPLACE FUNCTION update_ai_comment_visibility(
+  comment_id UUID,
+  new_is_public BOOLEAN
+)
+RETURNS JSON
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  result ai_comments%ROWTYPE;
+BEGIN
+  UPDATE ai_comments
+  SET is_public = new_is_public,
+      updated_at = now()
+  WHERE id = comment_id
+    AND user_id = auth.uid()
+  RETURNING * INTO result;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Comment not found or access denied';
+  END IF;
+
+  RETURN row_to_json(result);
+END;
+$$;
+
+-- Grant execute permission to authenticated users
+GRANT EXECUTE ON FUNCTION update_ai_comment_visibility(UUID, BOOLEAN) TO authenticated;

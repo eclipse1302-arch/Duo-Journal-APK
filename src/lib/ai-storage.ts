@@ -92,14 +92,14 @@ export async function updateAICommentVisibilityInDB(
   aiCommentId: string,
   isPublic: boolean
 ): Promise<AIComment | null> {
-  const { data, error } = await supabase
-    .from('ai_comments')
-    .update({ is_public: isPublic, updated_at: new Date().toISOString() })
-    .eq('id', aiCommentId)
-    .select()
-    .single();
+  // Use RPC (POST) instead of .update() (PATCH) for platform compatibility.
+  // Some hosting platforms block the HTTP PATCH method.
+  const { data, error } = await supabase.rpc('update_ai_comment_visibility', {
+    comment_id: aiCommentId,
+    new_is_public: isPublic,
+  });
   if (error) throw error;
-  return data;
+  return data as AIComment | null;
 }
 
 // ── AI Chat Messages ──────────────────────────────────────
