@@ -13,6 +13,13 @@ export default defineConfig({
   server: {
     allowedHosts: true,
     proxy: {
+      // Supabase proxy — avoids cross-domain errors in restricted browsers
+      '/supabase-api': {
+        target: 'https://nxjhygndibrmapwofvcs.supabase.co',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/supabase-api/, ''),
+        ws: true,
+      },
       // Agent endpoints → Python backend (app.py running on port 7860)
       '/api/agent': {
         target: 'http://localhost:7860',

@@ -20,6 +20,8 @@ PORT = 7860
 DIST_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dist")
 CONFIG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agentconfig")
 
+SUPABASE_REMOTE_URL = "https://nxjhygndibrmapwofvcs.supabase.co"
+
 # Initialise the Diary Companion agent once at startup
 agent = DiaryCompanionAgent(config_dir=CONFIG_DIR)
 
@@ -562,6 +564,11 @@ class SPAHandler(http.server.SimpleHTTPRequestHandler):
         super().__init__(*args, directory=DIST_DIR, **kwargs)
 
     def do_GET(self):
+        # Supabase proxy
+        if self.path.startswith("/supabase-api/"):
+            self._proxy_supabase()
+            return
+
         # Reload agent config on GET /api/agent/reload (for hot-reload during dev)
         if self.path == "/api/agent/reload":
             agent.reload_config()
@@ -577,7 +584,9 @@ class SPAHandler(http.server.SimpleHTTPRequestHandler):
         return super().do_GET()
 
     def do_POST(self):
-        if self.path == "/api/agent/comment":
+        if self.path.startswith("/supabase-api/"):
+            self._proxy_supabase()
+        elif self.path == "/api/agent/comment":
             self._handle_agent_comment()
         elif self.path == "/api/agent/score":
             self._handle_agent_score()
@@ -587,6 +596,36 @@ class SPAHandler(http.server.SimpleHTTPRequestHandler):
             self._handle_timetable_sync()
         elif self.path.startswith("/api/ai/"):
             self._proxy_ai_request()
+        else:
+            self.send_error(404, "Not Found")
+
+    def do_PATCH(self):
+        if self.path.startswith("/supabase-api/"):
+            self._proxy_supabase()
+        else:
+            self.send_error(404, "Not Found")
+
+    def do_PUT(self):
+        if self.path.startswith("/supabase-api/"):
+            self._proxy_supabase()
+        else:
+            self.send_error(404, "Not Found")
+
+    def do_DELETE(self):
+        if self.path.startswith("/supabase-api/"):
+            self._proxy_supabase()
+        else:
+            self.send_error(404, "Not Found")
+
+    def do_OPTIONS(self):
+        if self.path.startswith("/supabase-api/"):
+            # CORS preflight for Supabase proxy
+            self.send_response(204)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, apikey, Authorization, X-Client-Info, Prefer, Accept")
+            self.send_header("Access-Control-Max-Age", "86400")
+            self.end_headers()
         else:
             self.send_error(404, "Not Found")
 
@@ -796,6 +835,61 @@ class SPAHandler(http.server.SimpleHTTPRequestHandler):
 
     def log_message(self, format, *args):
         print(f"[http] {self.client_address[0]} - {format % args}")
+
+    # ── Supabase reverse proxy ──────────────────────────────
+
+    def _proxy_supabase(self):
+        """Proxy /supabase-api/* to Supabase cloud, so the browser never
+        makes cross-origin requests (fixes 'url not in domain list' errors
+        in restricted environments like WeChat browser)."""
+        target_path = self.path.replace("/supabase-api", "", 1)
+        target_url = f"{SUPABASE_REMOTE_URL}{target_path}"
+
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length) if content_length > 0 else None
+
+        headers = {}
+        for key in (
+            "Content-Type", "apikey", "Authorization", "Accept",
+            "X-Client-Info", "Prefer", "Range",
+        ):
+            val = self.headers.get(key)
+            if val:
+                headers[key] = val
+
+        req = urllib.request.Request(
+            target_url, data=body, headers=headers, method=self.command,
+        )
+
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                resp_body = resp.read()
+                self.send_response(resp.status)
+                for hdr in ("Content-Type", "Content-Range"):
+                    val = resp.headers.get(hdr)
+                    if val:
+                        self.send_header(hdr, val)
+                self.send_header("Content-Length", str(len(resp_body)))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(resp_body)
+        except urllib.error.HTTPError as e:
+            resp_body = e.read()
+            self.send_response(e.code)
+            ct = e.headers.get("Content-Type", "application/json")
+            self.send_header("Content-Type", ct)
+            self.send_header("Content-Length", str(len(resp_body)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(resp_body)
+        except Exception as e:
+            error_msg = json.dumps({"error": str(e)}).encode()
+            self.send_response(502)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(error_msg)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(error_msg)
 
 
 def main():
