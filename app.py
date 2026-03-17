@@ -285,6 +285,14 @@ def _do_cas_login(opener, fields, username, password, captcha_code=None, captcha
     form_action = fields.pop("__form_action__", None)
     rsa_public_key = fields.pop("__rsa_public_key__", None)
 
+    # Fallback: if login_Key regex didn't find the key, use the sessionKey hidden
+    # field value — this is what the browser's enkey() function actually uses.
+    if not rsa_public_key:
+        session_key_val = fields.get("sessionKey", "")
+        if session_key_val and len(session_key_val) > 50:
+            rsa_public_key = session_key_val
+            print("[cas-login] Using sessionKey hidden field for RSA encryption (login_Key not found in HTML)")
+
     # Encrypt password with RSA if the CAS page provided a public key
     actual_password = password
     if rsa_public_key:
@@ -307,7 +315,8 @@ def _do_cas_login(opener, fields, username, password, captcha_code=None, captcha
 
     # The browser JS sets sessionKey to the RSA public key before submission.
     # We must replicate this so the CAS server can match the key used for encryption.
-    if rsa_public_key and "sessionKey" in post_data:
+    # Always set it when RSA is available (the browser always does this).
+    if rsa_public_key:
         post_data["sessionKey"] = rsa_public_key
 
     if captcha_code:
@@ -340,10 +349,15 @@ def _do_cas_login(opener, fields, username, password, captcha_code=None, captcha
     print(f"[cas-login] POST fields: {list(post_data.keys())}")
     print(f"[cas-login] Username key={username_key}, Password key={password_key}")
     print(f"[cas-login] Captcha code: {captcha_code}, field: {captcha_field}")
+    print(f"[cas-login] RSA encryption used: {rsa_public_key is not None}")
 
+    # Build the request with browser-like headers
     req = urllib.request.Request(post_url, data=body, method="POST")
     req.add_header("Content-Type", "application/x-www-form-urlencoded")
-    req.add_header("Referer", post_url)
+    # Referer should be the login page URL (not the form action URL with jsessionid)
+    referer_url = f"{CAS_LOGIN_URL}?service={urllib.parse.quote(CAS_SERVICE, safe='')}"
+    req.add_header("Referer", referer_url)
+    req.add_header("Origin", "https://auth2.shsmu.edu.cn")
 
     try:
         resp = opener.open(req, timeout=15)
@@ -377,26 +391,64 @@ def _do_cas_login(opener, fields, username, password, captcha_code=None, captcha
     final_url = resp.url
 
     print(f"[cas-login] Final URL: {final_url}")
+    print(f"[cas-login] Response length: {len(result_html)}")
 
     # Check if login succeeded (redirected away from CAS login page)
     if "cas/login" in final_url.lower() and "ticket" not in final_url.lower():
+        # The URL still shows CAS login page. But check if the response body
+        # contains a redirect (some CAS versions use JS-based redirect).
+        ticket_m = re.search(r'ticket=(ST-[A-Za-z0-9-]+)', result_html)
+        js_redirect_m = re.search(
+            r'(?:window\.location(?:\.href)?\s*=|location\.replace\()\s*["\']([^"\']+)["\']',
+            result_html,
+        )
+        meta_redirect_m = re.search(
+            r'<meta[^>]+http-equiv=["\']refresh["\'][^>]+url=([^"\'>\s]+)',
+            result_html, re.I,
+        )
+        if ticket_m or js_redirect_m or meta_redirect_m:
+            redirect_url = None
+            if js_redirect_m:
+                redirect_url = js_redirect_m.group(1)
+            elif meta_redirect_m:
+                redirect_url = meta_redirect_m.group(1)
+            elif ticket_m:
+                redirect_url = f"{CAS_SERVICE}?ticket={ticket_m.group(1)}"
+            if redirect_url:
+                print(f"[cas-login] Found redirect in response body: {redirect_url}")
+                try:
+                    resp2 = opener.open(redirect_url, timeout=15)
+                    final_url = resp2.url
+                    print(f"[cas-login] Followed redirect to: {final_url}")
+                    return True, final_url
+                except Exception as redir_e:
+                    print(f"[cas-login] Failed to follow redirect: {redir_e}")
+
         # Still on login page - extract error message
-        # SHSMU CAS uses: <div id="msg" class="errors">error text</div>
-        # Also check errormsghide (server-side rendered error)
+        # SHSMU CAS uses: <div id="errormsghide">error text</div>
+        # The error text may be inside nested tags like <span>.
         err_msg = ""
         for pat in [
-            r'<div[^>]*id=["\']msg["\'][^>]*>([^<]+)',
-            r'<div[^>]*id=["\']errormsghide["\'][^>]*>([^<]+)',
+            r'<div[^>]*id=["\']errormsghide["\'][^>]*>(.*?)</div>',
+            r'<div[^>]*id=["\']msg["\'][^>]*class=["\'][^"\']*errors?[^"\']*["\'][^>]*>(.*?)</div>',
+            r'<span[^>]*id=["\']errormsg["\'][^>]*>(.*?)</span>',
             r'class=["\'][^"\']*errors?[^"\']*["\'][^>]*>([^<]+)',
-            r'<span[^>]*class=["\'][^"\']*(?:error|alert|warning)[^"\']*["\'][^>]*>([^<]+)',
+            r'<span[^>]*class=["\'][^"\']*(?:error|alert)[^"\']*["\'][^>]*>([^<]+)',
         ]:
-            m = re.search(pat, result_html, re.I)
-            if m and m.group(1).strip():
-                err_msg = m.group(1).strip()
-                print(f"[cas-login] Error matched by pattern: {pat[:50]}...")
-                break
+            m = re.search(pat, result_html, re.I | re.DOTALL)
+            if m:
+                # Strip HTML tags to get plain text
+                text = re.sub(r'<[^>]+>', '', m.group(1)).strip()
+                # Skip the generic HTTPS warning (not a login error)
+                if text and "non-secure" not in text.lower() and "single sign on" not in text.lower():
+                    err_msg = text
+                    print(f"[cas-login] Error matched by pattern: {pat[:50]}...")
+                    break
 
         if not err_msg:
+            # Log a snippet of the response for debugging
+            body_snippet = result_html[:800] if len(result_html) > 800 else result_html
+            print(f"[cas-login] No error message extracted. Response snippet:\n{body_snippet}")
             err_msg = "Login failed. Check credentials or captcha."
         print(f"[cas-login] Login FAILED: {err_msg}")
         return False, err_msg

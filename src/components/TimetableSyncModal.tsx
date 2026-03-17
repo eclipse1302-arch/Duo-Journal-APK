@@ -72,6 +72,10 @@ export default function TimetableSyncModal({ open, onClose, onSynced }: Timetabl
         msg = String((err as { message: unknown }).message);
       }
       setError(msg);
+      // Clear stale captcha state so re-submit triggers a fresh login flow
+      setCaptchaImage('');
+      setCaptchaCode('');
+      setSessionId('');
     } finally {
       setIsLoading(false);
       setStatus('');
