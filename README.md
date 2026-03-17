@@ -12,6 +12,7 @@
 - **AI 情感陪伴** — Diary Companion Agent 智能体，基于 Qwen3-8B，为每篇日记生成温暖评论、状态评分(0-100)，并支持多轮对话
 - **三种评论风格** — Poetic（文学性）、Passionate（热情）、Neutral（平衡），可手动选择或 Auto 自适应学习
 - **自适应风格学习** — 基于 EMA + Softmax 的轻量强化学习，根据用户反馈（👍😐👎）自动调整偏好
+- **课表同步** — 通过 Jaccount 登录同步 SJTU 医学院整学期课表，在日记页面显示当天课程（时间、课程名、教室）
 - **日历装饰** — 21 种生活场景贴纸 + 自由文字标签
 - **伙伴连接** — 双向确认机制，发送/接受/断开请求
 - **隐私控制** — AI 评论可设为 Public/Private，控制伙伴是否可见
@@ -27,6 +28,7 @@
 | 后端 | Supabase (Auth + PostgreSQL + Realtime) |
 | AI 智能体 | Python (agent.py) + agentconfig/ Markdown 配置 |
 | AI 模型 | ModelScope API (Qwen/Qwen3-8B) |
+| 课表同步 | Python CAS 登录 + RSA 加密 + 教务 JSON API |
 | 风格适应 | 前端 EMA + Softmax 算法 (style-memory-storage.ts) |
 | 部署 | Docker (魔搭创空间) / Vercel |
 
@@ -36,8 +38,9 @@
 duo-journal/
 ├── src/                             # React 前端源码
 │   ├── components/                  # UI 组件
-│   │   ├── Dashboard.tsx            #   主面板 (含风格选择)
-│   │   ├── JournalModal.tsx         #   日记编辑器 (含AI/反馈)
+│   │   ├── Dashboard.tsx            #   主面板 (含风格选择、课表同步)
+│   │   ├── JournalModal.tsx         #   日记编辑器 (含AI/反馈/当日课表)
+│   │   ├── TimetableSyncModal.tsx   #   课表同步对话框
 │   │   ├── StyleSelector.tsx        #   评论风格选择器
 │   │   ├── FeedbackButtons.tsx      #   AI 反馈按钮 (👍😐👎)
 │   │   ├── Calendar.tsx             #   日历组件
@@ -45,6 +48,7 @@ duo-journal/
 │   ├── lib/                         # 数据/服务层
 │   │   ├── ai-service.ts            #   Agent API 调用
 │   │   ├── ai-storage.ts            #   AI 数据 Supabase 存储
+│   │   ├── timetable-service.ts     #   课表同步 + 数据库操作
 │   │   ├── style-memory-storage.ts  #   风格记忆 + EMA/Softmax 算法
 │   │   ├── database.ts              #   核心数据 CRUD
 │   │   └── ...                      #   calendar-storage, media-utils 等

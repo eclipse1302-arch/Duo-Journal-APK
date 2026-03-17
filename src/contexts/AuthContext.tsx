@@ -11,6 +11,7 @@ interface AuthContextValue {
   loading: boolean;
   signUp: (username: string, password: string, displayName: string, avatar: string) => Promise<void>;
   signIn: (username: string, password: string) => Promise<void>;
+  signInWithJaccount: (username: string, password: string) => Promise<void>;
   signOut: () => Promise<void>;
   refreshProfile: () => Promise<void>;
 }
@@ -25,6 +26,10 @@ export function useAuth() {
 
 function usernameToEmail(username: string): string {
   return `${username.toLowerCase().trim()}@duo.journal`;
+}
+
+function jaccountToEmail(username: string): string {
+  return `${username.toLowerCase().trim()}@jaccount.shsmu`;
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
@@ -135,6 +140,46 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  const signInWithJaccount = useCallback(async (username: string, password: string) => {
+    const email = jaccountToEmail(username);
+
+    // Try to sign in first
+    const { error: signInError } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
+
+    if (!signInError) return; // Existing account, done
+
+    // If the account doesn't exist yet, create it
+    if (signInError.message.includes('Invalid login')) {
+      const { data, error: signUpError } = await supabase.auth.signUp({
+        email,
+        password,
+      });
+
+      if (signUpError) throw signUpError;
+      if (!data.user) throw new Error('Jaccount sign up failed.');
+
+      // Create profile with jaccount username as both username and display name
+      try {
+        const p = await createProfile(
+          data.user.id,
+          username.toLowerCase().trim(),
+          username.trim(),
+          '🎓',
+        );
+        setProfile(p);
+      } catch (profileError: unknown) {
+        const msg = profileError instanceof Error ? profileError.message : 'Failed to create profile.';
+        throw new Error(msg);
+      }
+      return;
+    }
+
+    throw signInError;
+  }, []);
+
   const signOut = useCallback(async () => {
     await supabase.auth.signOut();
     setUser(null);
@@ -144,7 +189,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <AuthContext.Provider
-      value={{ user, profile, session, loading, signUp, signIn, signOut, refreshProfile }}
+      value={{ user, profile, session, loading, signUp, signIn, signInWithJaccount, signOut, refreshProfile }}
     >
       {children}
     </AuthContext.Provider>

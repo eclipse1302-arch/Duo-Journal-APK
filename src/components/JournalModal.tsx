@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { X, Save, Trash2, BookOpen, PenLine, Loader2, MessageSquare, Star, ChevronDown, Lock, Unlock, Send, Image, Video, Sticker, Feather, Flame, Scale } from 'lucide-react';
+import { X, Save, Trash2, BookOpen, PenLine, Loader2, MessageSquare, Star, ChevronDown, Lock, Unlock, Send, Image, Video, Sticker, Feather, Flame, Scale, Clock, MapPin, GraduationCap } from 'lucide-react';
 import { useToast } from './Toast';
 import { 
   getEntryByDate, saveEntry, deleteEntry, 
@@ -17,8 +17,9 @@ import { generateAIComment, generateAICommentWithScore, continueConversation } f
 import {
   resolveStyle, updateMemoryAfterGeneration, processFeedback, saveStyleMemory
 } from '../lib/style-memory-storage';
+import { getCoursesForDate } from '../lib/timetable-service';
 import FeedbackButtons from './FeedbackButtons';
-import type { Profile, JournalEntry, AIComment, AIChatMessage, StyleMemory, CommentStyle, FeedbackValue } from '../types';
+import type { Profile, JournalEntry, AIComment, AIChatMessage, StyleMemory, CommentStyle, FeedbackValue, TimetableCourse } from '../types';
 import { CALENDAR_ICONS } from '../types';
 
 interface JournalModalProps {
@@ -85,6 +86,9 @@ export default function JournalModal({
   // Media upload
   const [isUploading, setIsUploading] = useState(false);
   
+  // Timetable
+  const [timetableCourses, setTimetableCourses] = useState<TimetableCourse[]>([]);
+  
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -96,10 +100,11 @@ export default function JournalModal({
 
     const loadEntries = async () => {
       try {
-        const [entry, comment, iconsList] = await Promise.all([
+        const [entry, comment, iconsList, courses] = await Promise.all([
           getEntryByDate(viewingUserId, date),
           isOwn ? getCalendarCommentForDate(currentUserId, date) : Promise.resolve(''),
           isOwn ? getCalendarIconsForDate(currentUserId, date) : Promise.resolve([]),
+          getCoursesForDate(viewingUserId, date).catch(() => [] as TimetableCourse[]),
         ]);
         
         if (!cancelled) {
@@ -107,6 +112,7 @@ export default function JournalModal({
           setContent(entry?.content ?? '');
           setCalendarComment(comment);
           setSelectedIcons(iconsList);
+          setTimetableCourses(courses);
           
           // Load AI comment from Supabase if entry exists
           if (entry) {
@@ -397,6 +403,36 @@ export default function JournalModal({
             </div>
           ) : isOwn ? (
             <div className="space-y-4">
+              {/* Timetable Section */}
+              {timetableCourses.length > 0 && (
+                <div className="p-4 rounded-xl bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800">
+                  <div className="flex items-center gap-2 mb-3">
+                    <GraduationCap className="w-4 h-4 text-blue-600" />
+                    <span className="text-sm font-medium text-foreground">Today's Courses</span>
+                    <span className="text-xs text-muted-foreground">({timetableCourses.length})</span>
+                  </div>
+                  <div className="space-y-2">
+                    {timetableCourses.map((course) => (
+                      <div key={course.id} className="flex items-start gap-3 p-2 rounded-lg bg-white/60 dark:bg-white/5">
+                        <div className="flex items-center gap-1 text-xs text-blue-600 font-mono whitespace-nowrap pt-0.5">
+                          <Clock className="w-3 h-3" />
+                          {course.start_time}-{course.end_time}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-foreground truncate">{course.course_name}</p>
+                          {course.classroom && (
+                            <p className="text-xs text-muted-foreground flex items-center gap-1 mt-0.5">
+                              <MapPin className="w-3 h-3 shrink-0" />
+                              <span className="truncate">{course.classroom}</span>
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {/* Calendar Decorations Section */}
               <div className="p-4 rounded-xl bg-surface border border-border">
                 <div className="flex items-center gap-2 mb-3">

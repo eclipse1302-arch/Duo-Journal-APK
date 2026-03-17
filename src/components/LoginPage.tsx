@@ -1,11 +1,12 @@
 import { useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from './Toast';
-import { BookHeart, Eye, EyeOff, UserPlus, LogIn } from 'lucide-react';
+import { BookHeart, Eye, EyeOff, UserPlus, LogIn, GraduationCap, Loader2 } from 'lucide-react';
 import { AVATAR_OPTIONS } from '../types';
+import { syncTimetable, saveTimetableCourses } from '../lib/timetable-service';
 
 export default function LoginPage() {
-  const [mode, setMode] = useState<'login' | 'signup'>('login');
+  const [mode, setMode] = useState<'login' | 'signup' | 'jaccount'>('login');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -14,7 +15,14 @@ export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const { signUp, signIn } = useAuth();
+
+  // Jaccount captcha state
+  const [captchaImage, setCaptchaImage] = useState('');
+  const [captchaCode, setCaptchaCode] = useState('');
+  const [sessionId, setSessionId] = useState('');
+  const [syncStatus, setSyncStatus] = useState('');
+
+  const { signUp, signIn, signInWithJaccount } = useAuth();
   const { showToast } = useToast();
 
   const resetForm = () => {
@@ -24,6 +32,10 @@ export default function LoginPage() {
     setDisplayName('');
     setAvatar('🌸');
     setError('');
+    setCaptchaImage('');
+    setCaptchaCode('');
+    setSessionId('');
+    setSyncStatus('');
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -32,6 +44,11 @@ export default function LoginPage() {
 
     if (!username.trim() || !password.trim()) {
       setError('Please fill in all fields.');
+      return;
+    }
+
+    if (mode === 'jaccount') {
+      await handleJaccountLogin();
       return;
     }
 
@@ -73,6 +90,51 @@ export default function LoginPage() {
     }
   };
 
+  const handleJaccountLogin = async () => {
+    setIsLoading(true);
+    try {
+      // Step 1: Sign in / create Supabase account
+      setSyncStatus('Signing in...');
+      await signInWithJaccount(username, password);
+
+      // Step 2: Sync timetable from university
+      setSyncStatus('Syncing timetable...');
+      const resp = await syncTimetable(
+        username,
+        password,
+        captchaCode || undefined,
+        sessionId || undefined,
+      );
+
+      // Handle captcha requirement
+      if (resp.captcha_required && resp.captcha_image) {
+        setCaptchaImage(resp.captcha_image);
+        setSessionId(resp.session_id ?? '');
+        setSyncStatus('');
+        setIsLoading(false);
+        return; // Wait for user to enter captcha
+      }
+
+      // Save courses to Supabase
+      if (resp.courses && resp.courses.length > 0) {
+        await saveTimetableCourses(resp.courses);
+        showToast(`Logged in! Synced ${resp.courses.length} courses.`, 'success');
+      } else if (resp.warning) {
+        showToast('Logged in! Timetable sync needs adjustment.', 'info');
+      } else {
+        showToast('Logged in with Jaccount!', 'success');
+      }
+
+      setSyncStatus('');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Something went wrong.';
+      setError(msg);
+      setSyncStatus('');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   return (
     <div className="min-h-screen flex">
       {/* Left: Hero image */}
@@ -109,7 +171,7 @@ export default function LoginPage() {
             <button
               type="button"
               onClick={() => { setMode('login'); resetForm(); }}
-              className={`flex-1 flex items-center justify-center gap-2 py-2.5 px-4 rounded-lg text-sm font-medium transition-all ${
+              className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 px-2 rounded-lg text-sm font-medium transition-all ${
                 mode === 'login'
                   ? 'bg-card shadow-soft text-foreground'
                   : 'text-muted-foreground hover:text-foreground'
@@ -121,34 +183,48 @@ export default function LoginPage() {
             <button
               type="button"
               onClick={() => { setMode('signup'); resetForm(); }}
-              className={`flex-1 flex items-center justify-center gap-2 py-2.5 px-4 rounded-lg text-sm font-medium transition-all ${
+              className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 px-2 rounded-lg text-sm font-medium transition-all ${
                 mode === 'signup'
                   ? 'bg-card shadow-soft text-foreground'
                   : 'text-muted-foreground hover:text-foreground'
               }`}
             >
               <UserPlus className="w-4 h-4" />
-              Create Account
+              Create
+            </button>
+            <button
+              type="button"
+              onClick={() => { setMode('jaccount'); resetForm(); }}
+              className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 px-2 rounded-lg text-sm font-medium transition-all ${
+                mode === 'jaccount'
+                  ? 'bg-card shadow-soft text-foreground'
+                  : 'text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              <GraduationCap className="w-4 h-4" />
+              Jaccount
             </button>
           </div>
 
           {/* Header text */}
           <div className="mb-6">
             <h2 className="text-xl font-semibold text-foreground">
-              {mode === 'login' ? 'Welcome back' : 'Create your account'}
+              {mode === 'login' ? 'Welcome back' : mode === 'signup' ? 'Create your account' : 'Jaccount Login'}
             </h2>
             <p className="text-muted-foreground text-sm mt-1">
               {mode === 'login'
                 ? 'Sign in to continue your journal'
-                : 'Start your shared journaling journey'}
+                : mode === 'signup'
+                ? 'Start your shared journaling journey'
+                : 'Sign in with your university Jaccount'}
             </p>
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-4">
-            {/* Username */}
+            {/* Username / Jaccount */}
             <div>
               <label htmlFor="username" className="block text-sm font-medium text-foreground mb-1.5">
-                Username
+                {mode === 'jaccount' ? 'Student Number' : 'Username'}
               </label>
               <input
                 id="username"
@@ -156,7 +232,7 @@ export default function LoginPage() {
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
                 className="input-field"
-                placeholder="Enter your username"
+                placeholder={mode === 'jaccount' ? 'Enter your student number' : 'Enter your username'}
                 autoComplete="username"
                 required
               />
@@ -208,7 +284,7 @@ export default function LoginPage() {
             {/* Password */}
             <div>
               <label htmlFor="password" className="block text-sm font-medium text-foreground mb-1.5">
-                Password
+                {mode === 'jaccount' ? 'Jaccount Password' : 'Password'}
               </label>
               <div className="relative">
                 <input
@@ -217,7 +293,7 @@ export default function LoginPage() {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   className="input-field pr-10"
-                  placeholder={mode === 'signup' ? 'At least 6 characters' : 'Enter your password'}
+                  placeholder={mode === 'signup' ? 'At least 6 characters' : mode === 'jaccount' ? 'Enter your Jaccount password' : 'Enter your password'}
                   autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
                   required
                 />
@@ -253,6 +329,37 @@ export default function LoginPage() {
               </div>
             )}
 
+            {/* Captcha (Jaccount, when required) */}
+            {mode === 'jaccount' && captchaImage && (
+              <div className="animate-fade-in space-y-2">
+                <label className="block text-sm font-medium text-foreground">
+                  Verification Code
+                </label>
+                <div className="flex items-center gap-3">
+                  <img
+                    src={captchaImage}
+                    alt="Captcha"
+                    className="h-10 rounded border border-border"
+                  />
+                  <input
+                    type="text"
+                    value={captchaCode}
+                    onChange={(e) => setCaptchaCode(e.target.value)}
+                    className="input-field flex-1"
+                    placeholder="Enter captcha"
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* Sync status */}
+            {syncStatus && (
+              <p className="text-sm text-muted-foreground flex items-center gap-2 animate-fade-in">
+                <Loader2 className="w-4 h-4 animate-spin" />
+                {syncStatus}
+              </p>
+            )}
+
             {/* Error */}
             {error && (
               <p className="text-sm text-destructive animate-fade-in">{error}</p>
@@ -267,12 +374,19 @@ export default function LoginPage() {
               {isLoading ? (
                 <span className="flex items-center gap-2">
                   <span className="w-4 h-4 border-2 border-primary-foreground/30 border-t-primary-foreground rounded-full animate-spin" />
-                  {mode === 'login' ? 'Signing in...' : 'Creating account...'}
+                  {mode === 'login' ? 'Signing in...' : mode === 'signup' ? 'Creating account...' : 'Connecting...'}
                 </span>
               ) : (
-                mode === 'login' ? 'Sign In' : 'Create Account'
+                mode === 'login' ? 'Sign In' : mode === 'signup' ? 'Create Account' : captchaImage ? 'Submit & Sync' : 'Login & Sync Timetable'
               )}
             </button>
+
+            {/* Jaccount info note */}
+            {mode === 'jaccount' && (
+              <p className="text-xs text-muted-foreground text-center animate-fade-in">
+                Your student number and Jaccount password will be used to sync your course timetable from the university system.
+              </p>
+            )}
           </form>
         </div>
       </div>

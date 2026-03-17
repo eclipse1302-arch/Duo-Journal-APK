@@ -282,3 +282,73 @@ $$;
 
 -- Grant execute permission to authenticated users
 GRANT EXECUTE ON FUNCTION update_ai_comment_visibility(UUID, BOOLEAN) TO authenticated;
+
+-- ============================================
+-- Timetable courses table
+-- Stores per-date courses (not weekly recurring)
+-- ============================================
+DROP TABLE IF EXISTS timetable_courses;
+CREATE TABLE timetable_courses (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  course_date DATE NOT NULL,
+  start_time TEXT NOT NULL,
+  end_time TEXT NOT NULL,
+  course_name TEXT NOT NULL,
+  classroom TEXT,
+  teacher TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_timetable_user_date
+  ON timetable_courses(user_id, course_date);
+
+ALTER TABLE timetable_courses ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can view own timetable" ON timetable_courses;
+CREATE POLICY "Users can view own timetable"
+  ON timetable_courses FOR SELECT
+  USING (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "Users can insert own timetable" ON timetable_courses;
+CREATE POLICY "Users can insert own timetable"
+  ON timetable_courses FOR INSERT
+  WITH CHECK (auth.uid() = user_id);
+
+-- ============================================
+-- RPC: save_timetable_courses
+-- Atomically replaces all timetable courses for the current user.
+-- Uses POST instead of DELETE+INSERT for platform compatibility.
+-- ============================================
+DROP FUNCTION IF EXISTS save_timetable_courses(JSONB);
+CREATE OR REPLACE FUNCTION save_timetable_courses(courses JSONB)
+RETURNS JSON
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  inserted_count INTEGER;
+BEGIN
+  -- Remove old courses
+  DELETE FROM timetable_courses WHERE user_id = auth.uid();
+
+  -- Insert new courses (each item has course_date instead of day_of_week)
+  INSERT INTO timetable_courses (user_id, course_date, start_time, end_time, course_name, classroom, teacher)
+  SELECT
+    auth.uid(),
+    (item->>'course_date')::DATE,
+    item->>'start_time',
+    item->>'end_time',
+    item->>'course_name',
+    item->>'classroom',
+    item->>'teacher'
+  FROM jsonb_array_elements(courses) AS item;
+
+  GET DIAGNOSTICS inserted_count = ROW_COUNT;
+
+  RETURN json_build_object('inserted', inserted_count);
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION save_timetable_courses(JSONB) TO authenticated;

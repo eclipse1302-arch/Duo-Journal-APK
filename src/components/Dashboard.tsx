@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useReducer, useRef } from 'react';
-import { BookHeart, LogOut, RefreshCw, Link, Bell, Key, ChevronDown } from 'lucide-react';
+import { BookHeart, LogOut, RefreshCw, Link, Bell, Key, ChevronDown, GraduationCap } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { getActivePartner, getPendingIncomingRequests, getEntryCount } from '../lib/database';
 import { getOrCreateStyleMemory, updateStylePreference } from '../lib/style-memory-storage';
@@ -7,6 +7,7 @@ import Calendar from './Calendar';
 import JournalModal from './JournalModal';
 import PartnerPanel from './PartnerPanel';
 import ChangePasswordModal from './ChangePasswordModal';
+import TimetableSyncModal from './TimetableSyncModal';
 import StyleSelector from './StyleSelector';
 import type { Profile, PartnerRequest, StyleMemory, StylePreference } from '../types';
 
@@ -23,6 +24,7 @@ export default function Dashboard() {
   const [showPartnerPanel, setShowPartnerPanel] = useState(false);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
+  const [showTimetableSync, setShowTimetableSync] = useState(false);
   const [styleMemory, setStyleMemory] = useState<StyleMemory | null>(null);
 
   const [myEntryCount, setMyEntryCount] = useState(0);
@@ -186,6 +188,16 @@ export default function Dashboard() {
                     <Key className="w-4 h-4" />
                     Change Password
                   </button>
+                  <button
+                    onClick={() => {
+                      setShowUserMenu(false);
+                      setShowTimetableSync(true);
+                    }}
+                    className="w-full px-4 py-2 text-left text-sm hover:bg-surface flex items-center gap-2"
+                  >
+                    <GraduationCap className="w-4 h-4" />
+                    Sync Timetable
+                  </button>
                   <div className="border-t border-border my-1" />
                   <StyleSelector
                     current={styleMemory?.style_preference ?? 'Auto'}
@@ -333,6 +345,13 @@ export default function Dashboard() {
       <ChangePasswordModal
         open={showPasswordModal}
         onClose={() => setShowPasswordModal(false)}
+      />
+
+      {/* Timetable sync modal */}
+      <TimetableSyncModal
+        open={showTimetableSync}
+        onClose={() => setShowTimetableSync(false)}
+        onSynced={forceRefresh}
       />
     </div>
   );

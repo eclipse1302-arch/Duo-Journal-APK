@@ -105,6 +105,20 @@ export const STYLE_OPTIONS: Array<{
   { key: 'Neutral', icon: 'Scale', label: 'Neutral', description: 'Balanced & calm', color: 'bg-blue-100' },
 ];
 
+// ── Timetable ────────────────────────────────────────────
+
+export interface TimetableCourse {
+  id: string;
+  user_id: string;
+  course_date: string;   // "YYYY-MM-DD"
+  start_time: string;    // "08:00"
+  end_time: string;      // "09:30"
+  course_name: string;
+  classroom: string | null;
+  teacher: string | null;
+  created_at: string;
+}
+
 export const CALENDAR_ICONS = [
   { emoji: '❤️', label: '爱心', description: '情人节/恋爱' },
   { emoji: '🎂', label: '蛋糕', description: '生日' },

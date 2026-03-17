@@ -18,6 +18,11 @@ export default defineConfig({
         target: 'http://localhost:7860',
         changeOrigin: true,
       },
+      // Timetable sync → Python backend
+      '/api/timetable': {
+        target: 'http://localhost:7860',
+        changeOrigin: true,
+      },
       // Legacy raw AI proxy (kept as fallback)
       '/api/ai': {
         target: 'https://api-inference.modelscope.cn',
