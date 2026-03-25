@@ -14,7 +14,7 @@ import traceback
 from cryptography.hazmat.primitives.asymmetric import padding as asym_padding
 from cryptography.hazmat.primitives import serialization
 
-APP_VERSION = "2026-03-25-v3"  # Version marker to verify deployment
+APP_VERSION = "2026-03-25-v4"  # Version marker to verify deployment
 
 from agent import DiaryCompanionAgent
 
@@ -43,10 +43,6 @@ CAS_LOGIN_URL = "https://auth2.shsmu.edu.cn/cas/login"
 CAS_BASE_URL = "https://auth2.shsmu.edu.cn/cas/"
 CAS_SERVICE = "https://jwstu.shsmu.edu.cn/Login/authLogin"
 TIMETABLE_API = "https://jwstu.shsmu.edu.cn/Home/GetCurriculumTable"
-
-# Vision model for captcha solving
-VISION_API_URL = "https://api-inference.modelscope.cn/v1/chat/completions"
-VISION_MODEL_ID = "Qwen/QVQ-72B-Preview"
 
 
 def _rsa_encrypt(plaintext: str, pub_key_b64: str) -> str:
@@ -220,69 +216,6 @@ def _fetch_captcha_image(opener, captcha_url):
     content_type = resp.headers.get("Content-Type", "image/jpeg")
     b64 = base64.b64encode(img_bytes).decode("ascii")
     return f"data:{content_type};base64,{b64}", img_bytes
-
-
-def _solve_math_captcha(img_bytes):
-    """Try to auto-solve a simple math captcha (e.g. '3+4=?') using a vision LLM.
-
-    Returns the answer string if successful, or None if it cannot be solved.
-    """
-    from agent import MODELSCOPE_API_KEY
-
-    b64_img = base64.b64encode(img_bytes).decode("ascii")
-
-    payload = {
-        "model": VISION_MODEL_ID,
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:image/png;base64,{b64_img}"},
-                    },
-                    {
-                        "type": "text",
-                        "text": (
-                            "This is a captcha image showing a simple math problem like 'X+Y=?'. "
-                            "Please identify the two numbers and the operator, compute the result, "
-                            "and respond with ONLY the numeric answer. Nothing else."
-                        ),
-                    },
-                ],
-            }
-        ],
-        "max_tokens": 64,
-        "temperature": 0,
-    }
-
-    body = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        VISION_API_URL,
-        data=body,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {MODELSCOPE_API_KEY}",
-        },
-        method="POST",
-    )
-
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            answer_text = data["choices"][0]["message"]["content"].strip()
-            print(f"[captcha-solver] Vision API raw response (last 200 chars): ...{answer_text[-200:]}")
-            # Extract the LAST number from the response (QVQ model is verbose,
-            # the final number is usually the computed answer)
-            all_nums = re.findall(r'\d+', answer_text)
-            if all_nums:
-                answer = all_nums[-1]
-                print(f"[captcha-solver] Extracted answer: {answer} (from {len(all_nums)} numbers found)")
-                return answer
-    except Exception as e:
-        print(f"[captcha-solver] Vision API failed: {type(e).__name__}: {e}")
-
-    return None
 
 
 def _do_cas_login(opener, fields, username, password, captcha_code=None, captcha_field=None):
@@ -662,7 +595,7 @@ class SPAHandler(http.server.SimpleHTTPRequestHandler):
 
         # Version check endpoint to verify which app.py is deployed
         if self.path == "/api/version":
-            self._send_json(200, {"version": APP_VERSION, "vision_model": VISION_MODEL_ID})
+            self._send_json(200, {"version": APP_VERSION})
             return
 
         path = self.translate_path(self.path)
@@ -835,46 +768,12 @@ class SPAHandler(http.server.SimpleHTTPRequestHandler):
             fields, captcha_url, _, captcha_field = _fetch_cas_login_page(opener)
 
             if captcha_url:
-                # Captcha required - fetch image and try to auto-solve
-                captcha_b64, captcha_bytes = _fetch_captcha_image(opener, captcha_url)
+                # Captcha required - fetch image and return to user for manual entry.
+                # Do NOT auto-solve or consume the lt/execution tokens here.
+                # The tokens must remain fresh for Phase 2 when the user submits.
+                captcha_b64, _ = _fetch_captcha_image(opener, captcha_url)
+                print(f"[timetable-sync] Phase 1: captcha required, returning to user (lt={fields.get('lt', 'N/A')[:20]}...)")
 
-                # Try auto-solving the math captcha via vision LLM
-                print("[captcha-solver] Attempting auto-solve...")
-                answer = _solve_math_captcha(captcha_bytes)
-
-                if answer:
-                    print(f"[captcha-solver] Auto-solved: {answer}")
-                    ok, result = _do_cas_login(
-                        opener, fields, username, password, answer,
-                        captcha_field=captcha_field,
-                    )
-                    if ok:
-                        courses = _fetch_timetable(opener)
-                        if isinstance(courses, dict) and "error" in courses:
-                            self._send_json(200, {"courses": [], "warning": courses["error"]})
-                        else:
-                            self._send_json(200, {"courses": courses})
-                        return
-
-                    # Auto-solve failed - check WHY
-                    is_captcha_err = "验证码" in result
-                    print(f"[captcha-solver] Auto-solve rejected: {result} (is_captcha_err={is_captcha_err})")
-
-                    if not is_captcha_err:
-                        # Credentials are wrong, not captcha - return error immediately
-                        # Don't waste user's time entering captcha for bad credentials
-                        self._send_json(401, {"error": result})
-                        return
-
-                    # Captcha was wrong; need a fresh session+captcha for the user
-                    opener, cookie_jar = _build_opener()
-                    fields, captcha_url, _, captcha_field = _fetch_cas_login_page(opener)
-                    if captcha_url:
-                        captcha_b64, _ = _fetch_captcha_image(opener, captcha_url)
-                else:
-                    print("[captcha-solver] Auto-solve returned no answer, showing captcha to user")
-
-                # Return captcha to frontend for manual entry
                 sid = str(uuid.uuid4())
                 _cas_sessions[sid] = {"cookie_jar": cookie_jar, "fields": fields, "captcha_field": captcha_field}
                 self._send_json(200, {
