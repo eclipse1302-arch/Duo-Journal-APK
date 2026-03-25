@@ -14,6 +14,8 @@ import traceback
 from cryptography.hazmat.primitives.asymmetric import padding as asym_padding
 from cryptography.hazmat.primitives import serialization
 
+APP_VERSION = "2026-03-25-v3"  # Version marker to verify deployment
+
 from agent import DiaryCompanionAgent
 
 PORT = 7860
@@ -44,7 +46,7 @@ TIMETABLE_API = "https://jwstu.shsmu.edu.cn/Home/GetCurriculumTable"
 
 # Vision model for captcha solving
 VISION_API_URL = "https://api-inference.modelscope.cn/v1/chat/completions"
-VISION_MODEL_ID = "Qwen/Qwen2.5-VL-72B-Instruct"
+VISION_MODEL_ID = "Qwen/QVQ-72B-Preview"
 
 
 def _rsa_encrypt(plaintext: str, pub_key_b64: str) -> str:
@@ -237,7 +239,7 @@ def _solve_math_captcha(img_bytes):
                 "content": [
                     {
                         "type": "image_url",
-                        "image_url": {"url": f"data:image/jpeg;base64,{b64_img}"},
+                        "image_url": {"url": f"data:image/png;base64,{b64_img}"},
                     },
                     {
                         "type": "text",
@@ -250,7 +252,7 @@ def _solve_math_captcha(img_bytes):
                 ],
             }
         ],
-        "max_tokens": 16,
+        "max_tokens": 64,
         "temperature": 0,
     }
 
@@ -266,15 +268,19 @@ def _solve_math_captcha(img_bytes):
     )
 
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             answer_text = data["choices"][0]["message"]["content"].strip()
-            # Extract just the number from the response
-            num_m = re.search(r'\d+', answer_text)
-            if num_m:
-                return num_m.group(0)
+            print(f"[captcha-solver] Vision API raw response (last 200 chars): ...{answer_text[-200:]}")
+            # Extract the LAST number from the response (QVQ model is verbose,
+            # the final number is usually the computed answer)
+            all_nums = re.findall(r'\d+', answer_text)
+            if all_nums:
+                answer = all_nums[-1]
+                print(f"[captcha-solver] Extracted answer: {answer} (from {len(all_nums)} numbers found)")
+                return answer
     except Exception as e:
-        print(f"[captcha-solver] Vision API failed: {e}")
+        print(f"[captcha-solver] Vision API failed: {type(e).__name__}: {e}")
 
     return None
 
@@ -309,6 +315,7 @@ def _do_cas_login(opener, fields, username, password, captcha_code=None, captcha
         username_key: username,
         password_key: actual_password,
         "_eventId": "submit",
+        "submit": "",            # browser includes the submit button value
     }
     # Merge hidden form fields (skip internal __ keys)
     for k, v in fields.items():
@@ -329,6 +336,9 @@ def _do_cas_login(opener, fields, username, password, captcha_code=None, captcha
             # Shotgun approach: add all common captcha field names
             for field_name in ["captchaResponse", "captcha", "validateCode", "authcode", "code", "captcha_code"]:
                 post_data[field_name] = captcha_code
+        # Always ensure 'authcode' is set (SHSMU CAS uses this field name)
+        if "authcode" not in post_data:
+            post_data["authcode"] = captcha_code
 
     # Determine POST URL - use form_action if detected
     if form_action:
@@ -426,32 +436,107 @@ def _do_cas_login(opener, fields, username, password, captcha_code=None, captcha
                 except Exception as redir_e:
                     print(f"[cas-login] Failed to follow redirect: {redir_e}")
 
+        # Detect two-factor / verification page (credentials accepted but
+        # CAS requires phone or email verification before granting ticket).
+        value_m = re.search(r'var\s+value\s*=\s*["\']?([^;\s"\']+)', result_html)
+        if value_m and value_m.group(1) not in ("null", "None", ""):
+            print(f"[cas-login] 2FA / verification page detected: value={value_m.group(1)}")
+            # Credentials were accepted. Try submitting the form again
+            # without captcha (the CAS may auto-redirect after first auth step).
+            # Extract the new form action and hidden fields from this page.
+            new_form_m = re.search(r'<form[^>]*id=["\']fm1["\'][^>]*action=["\']([^"\']+)["\']', result_html, re.I)
+            new_lt_m = re.search(r'name=["\']lt["\'][^>]*value=["\']([^"\']*)["\']', result_html, re.I)
+            new_exec_m = re.search(r'name=["\']execution["\'][^>]*value=["\']([^"\']*)["\']', result_html, re.I)
+            if new_form_m:
+                new_action = new_form_m.group(1)
+                if new_action.startswith("/"):
+                    new_url = f"https://auth2.shsmu.edu.cn{new_action}"
+                else:
+                    new_url = new_action
+                new_post = {
+                    "username": username,
+                    "password": actual_password,
+                    "_eventId": "submit",
+                    "submit": "",
+                }
+                if new_lt_m:
+                    new_post["lt"] = new_lt_m.group(1)
+                if new_exec_m:
+                    new_post["execution"] = new_exec_m.group(1)
+                if rsa_public_key:
+                    new_post["sessionKey"] = rsa_public_key
+                new_body = urllib.parse.urlencode(new_post).encode("utf-8")
+                new_req = urllib.request.Request(new_url, data=new_body, method="POST")
+                new_req.add_header("Content-Type", "application/x-www-form-urlencoded")
+                new_req.add_header("Referer", post_url)
+                new_req.add_header("Origin", "https://auth2.shsmu.edu.cn")
+                try:
+                    resp3 = opener.open(new_req, timeout=15)
+                    final_url = resp3.url
+                    print(f"[cas-login] 2FA resubmit final URL: {final_url}")
+                    if "cas/login" not in final_url.lower() or "ticket" in final_url.lower():
+                        return True, final_url
+                except Exception as e2fa:
+                    print(f"[cas-login] 2FA resubmit failed: {e2fa}")
+            return False, "Login requires additional verification (phone/email). Please log in via browser first."
+
         # Still on login page - extract error message
-        # SHSMU CAS uses: <div id="errormsghide">error text</div>
-        # The error text may be inside nested tags like <span>.
+        # SHSMU CAS actual structure (verified):
+        #   <span id="errormsg" ...>
+        #     <div id="msg" class="errors">error text</div>
+        #   </span>
         err_msg = ""
-        for pat in [
-            r'<div[^>]*id=["\']errormsghide["\'][^>]*>(.*?)</div>',
-            r'<div[^>]*id=["\']msg["\'][^>]*class=["\'][^"\']*errors?[^"\']*["\'][^>]*>(.*?)</div>',
-            r'<span[^>]*id=["\']errormsg["\'][^>]*>(.*?)</span>',
-            r'class=["\'][^"\']*errors?[^"\']*["\'][^>]*>([^<]+)',
-            r'<span[^>]*class=["\'][^"\']*(?:error|alert)[^"\']*["\'][^>]*>([^<]+)',
-        ]:
-            m = re.search(pat, result_html, re.I | re.DOTALL)
-            if m:
-                # Strip HTML tags to get plain text
-                text = re.sub(r'<[^>]+>', '', m.group(1)).strip()
-                # Skip the generic HTTPS warning (not a login error)
+
+        # ── Strategy 1: Look for the specific SHSMU structure ──
+        # The real CAS page puts errors inside <span id="errormsg"><div id="msg" class="errors">TEXT</div></span>
+        inner_msg_m = re.search(
+            r'<div[^>]*id=["\']msg["\'][^>]*class=["\'][^"\']*errors[^"\']*["\'][^>]*>([^<]+)</div>',
+            result_html, re.I,
+        )
+        if inner_msg_m:
+            text = inner_msg_m.group(1).strip()
+            if text and "non-secure" not in text.lower() and "single sign on" not in text.lower():
+                err_msg = text
+                print(f"[cas-login] Error extracted (strategy 1 - msg div): {err_msg}")
+
+        # ── Strategy 2: errormsg span with nested content ──
+        if not err_msg:
+            span_m = re.search(
+                r'<span[^>]*id=["\']errormsg["\'][^>]*>(.*?)</span>',
+                result_html, re.I | re.DOTALL,
+            )
+            if span_m:
+                text = re.sub(r'<[^>]+>', '', span_m.group(1)).strip()
                 if text and "non-secure" not in text.lower() and "single sign on" not in text.lower():
                     err_msg = text
-                    print(f"[cas-login] Error matched by pattern: {pat[:50]}...")
+                    print(f"[cas-login] Error extracted (strategy 2 - errormsg span): {err_msg}")
+
+        # ── Strategy 3: errormsghide div (some CAS versions) ──
+        if not err_msg:
+            hide_m = re.search(
+                r'id=["\']errormsghide["\'][^>]*>(.*?)</(?:div|span)>',
+                result_html, re.I | re.DOTALL,
+            )
+            if hide_m:
+                text = re.sub(r'<[^>]+>', '', hide_m.group(1)).strip()
+                if text:
+                    err_msg = text
+                    print(f"[cas-login] Error extracted (strategy 3 - errormsghide): {err_msg}")
+
+        # ── Strategy 4: Any element with class containing 'errors' ──
+        if not err_msg:
+            for m in re.finditer(r'class=["\'][^"\']*errors?[^"\']*["\'][^>]*>([^<]+)', result_html, re.I):
+                text = m.group(1).strip()
+                if text and "non-secure" not in text.lower() and "single sign on" not in text.lower() and len(text) < 200:
+                    err_msg = text
+                    print(f"[cas-login] Error extracted (strategy 4 - errors class): {err_msg}")
                     break
 
         if not err_msg:
-            # Log a snippet of the response for debugging
-            body_snippet = result_html[:800] if len(result_html) > 800 else result_html
-            print(f"[cas-login] No error message extracted. Response snippet:\n{body_snippet}")
-            err_msg = "Login failed. Check credentials or captcha."
+            # Log a large snippet of the response for debugging
+            body_snippet = result_html[:2000]
+            print(f"[cas-login] No error message extracted from CAS response. Response snippet:\n{body_snippet}")
+            err_msg = "Login failed. The CAS server did not return a specific error. Please try again."
         print(f"[cas-login] Login FAILED: {err_msg}")
         return False, err_msg
 
@@ -573,6 +658,11 @@ class SPAHandler(http.server.SimpleHTTPRequestHandler):
         if self.path == "/api/agent/reload":
             agent.reload_config()
             self._send_json(200, {"status": "ok", "message": "Agent config reloaded"})
+            return
+
+        # Version check endpoint to verify which app.py is deployed
+        if self.path == "/api/version":
+            self._send_json(200, {"version": APP_VERSION, "vision_model": VISION_MODEL_ID})
             return
 
         path = self.translate_path(self.path)
@@ -706,25 +796,39 @@ class SPAHandler(http.server.SimpleHTTPRequestHandler):
                 self._send_json(400, {"error": "username and password are required"})
                 return
 
+            print(f"[timetable-sync] Request: username={username}, session_id={session_id[:8] if session_id else 'none'}, captcha_code={captcha_code or 'none'}")
+
             # Phase 2: Resume a session with captcha answer
-            if session_id and session_id in _cas_sessions:
-                sess = _cas_sessions.pop(session_id)
-                opener, _ = _build_opener(sess["cookie_jar"])
-
-                ok, result = _do_cas_login(
-                    opener, sess["fields"], username, password, captcha_code,
-                    captcha_field=sess.get("captcha_field"),
-                )
-                if not ok:
-                    self._send_json(401, {"error": result})
-                    return
-
-                courses = _fetch_timetable(opener)
-                if isinstance(courses, dict) and "error" in courses:
-                    self._send_json(200, {"courses": [], "warning": courses["error"]})
+            if session_id:
+                if session_id not in _cas_sessions:
+                    print(f"[timetable-sync] Session {session_id[:8]}... NOT FOUND (server restarted or expired). Starting fresh Phase 1.")
+                    # Fall through to Phase 1 below
                 else:
-                    self._send_json(200, {"courses": courses})
-                return
+                    sess = _cas_sessions.pop(session_id)
+                    opener, _ = _build_opener(sess["cookie_jar"])
+
+                    # Use the saved fields directly. Do NOT re-fetch the CAS page here!
+                    # The captcha answer the user provides is tied to the lt/execution tokens
+                    # and session cookies saved in Phase 1. Re-fetching would generate a new
+                    # captcha challenge on the server, invalidating the user's answer.
+                    use_fields = sess["fields"]
+                    use_captcha_field = sess.get("captcha_field")
+
+                    print(f"[timetable-sync] Phase 2: resuming session, captcha_code={captcha_code}, captcha_field={use_captcha_field}, lt={use_fields.get('lt', 'N/A')[:20] if use_fields.get('lt') else 'N/A'}...")
+                    ok, result = _do_cas_login(
+                        opener, use_fields, username, password, captcha_code,
+                        captcha_field=use_captcha_field,
+                    )
+                    if not ok:
+                        self._send_json(401, {"error": result})
+                        return
+
+                    courses = _fetch_timetable(opener)
+                    if isinstance(courses, dict) and "error" in courses:
+                        self._send_json(200, {"courses": [], "warning": courses["error"]})
+                    else:
+                        self._send_json(200, {"courses": courses})
+                    return
 
             # Phase 1: Fresh login attempt
             opener, cookie_jar = _build_opener()
@@ -751,13 +855,24 @@ class SPAHandler(http.server.SimpleHTTPRequestHandler):
                         else:
                             self._send_json(200, {"courses": courses})
                         return
-                    # Auto-solve answer was wrong; fall through to manual
-                    print(f"[captcha-solver] Auto-solve answer rejected: {result}")
-                    # Need a fresh captcha for the user since the old one is consumed
+
+                    # Auto-solve failed - check WHY
+                    is_captcha_err = "验证码" in result
+                    print(f"[captcha-solver] Auto-solve rejected: {result} (is_captcha_err={is_captcha_err})")
+
+                    if not is_captcha_err:
+                        # Credentials are wrong, not captcha - return error immediately
+                        # Don't waste user's time entering captcha for bad credentials
+                        self._send_json(401, {"error": result})
+                        return
+
+                    # Captcha was wrong; need a fresh session+captcha for the user
                     opener, cookie_jar = _build_opener()
                     fields, captcha_url, _, captcha_field = _fetch_cas_login_page(opener)
                     if captcha_url:
                         captcha_b64, _ = _fetch_captcha_image(opener, captcha_url)
+                else:
+                    print("[captcha-solver] Auto-solve returned no answer, showing captcha to user")
 
                 # Return captcha to frontend for manual entry
                 sid = str(uuid.uuid4())
@@ -784,7 +899,7 @@ class SPAHandler(http.server.SimpleHTTPRequestHandler):
         except Exception as e:
             print(f"[timetable-sync] EXCEPTION: {type(e).__name__}: {e}")
             traceback.print_exc()
-            self._send_json(500, {"error": f"Timetable sync failed: {type(e).__name__}: {str(e)}"})
+            self._send_json(500, {"error": f"Timetable sync failed: {type(e).__name__}: {str(e)}", "app_version": APP_VERSION})
 
     # ── Raw AI proxy (legacy / fallback) ────────────────────
 

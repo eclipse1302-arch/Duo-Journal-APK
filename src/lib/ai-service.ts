@@ -2,7 +2,14 @@
 // All prompt construction, LLM calls, and API keys live in agent.py.
 // The frontend only sends diary text, style, and receives structured responses.
 
+import { Capacitor } from '@capacitor/core';
 import type { CommentStyle } from '../types';
+
+// On native platforms (APK), use the direct backend URL because the
+// ModelScope studio wrapper URL always returns HTML, not JSON.
+const BASE_URL = Capacitor.isNativePlatform()
+  ? 'https://eclipse1302-duo-journal.ms.show'
+  : 'https://www.modelscope.cn/studios/eclipse1302/Duo-Journal';
 
 interface AIResponse {
   comment: string;
@@ -13,7 +20,7 @@ export async function generateAIComment(
   journalContent: string,
   style: CommentStyle = 'Neutral'
 ): Promise<string> {
-  const res = await fetch('/api/agent/comment', {
+  const res = await fetch(`${BASE_URL}/api/agent/comment`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ content: journalContent, style }),
@@ -33,7 +40,7 @@ export async function generateAICommentWithScore(
   journalContent: string,
   style: CommentStyle = 'Neutral'
 ): Promise<AIResponse> {
-  const res = await fetch('/api/agent/score', {
+  const res = await fetch(`${BASE_URL}/api/agent/score`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ content: journalContent, style }),
@@ -58,7 +65,7 @@ export async function continueConversation(
   newMessage: string,
   style: CommentStyle = 'Neutral'
 ): Promise<string> {
-  const res = await fetch('/api/agent/chat', {
+  const res = await fetch(`${BASE_URL}/api/agent/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({

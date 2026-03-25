@@ -169,10 +169,10 @@ export default function Dashboard() {
             <div className="relative" ref={menuRef}>
               <button
                 onClick={() => setShowUserMenu(!showUserMenu)}
-                className="hidden sm:flex items-center gap-2 text-sm text-muted-foreground px-2 py-1 rounded-lg hover:bg-surface transition-colors"
+                className="flex items-center gap-1.5 sm:gap-2 text-sm text-muted-foreground px-2 py-1 rounded-lg hover:bg-surface transition-colors"
               >
                 <span>{profile.avatar}</span>
-                <span>{profile.display_name}</span>
+                <span className="hidden sm:inline">{profile.display_name}</span>
                 <ChevronDown className={`w-3 h-3 transition-transform ${showUserMenu ? 'rotate-180' : ''}`} />
               </button>
               
@@ -220,7 +220,7 @@ export default function Dashboard() {
 
             <button
               onClick={handleLogout}
-              className="btn-ghost p-2"
+              className="hidden sm:inline-flex btn-ghost p-2"
               aria-label="Log out"
               title="Log out"
             >

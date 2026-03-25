@@ -1,5 +1,12 @@
+import { Capacitor } from '@capacitor/core';
 import { supabase } from './supabase';
 import type { TimetableCourse } from '../types';
+
+// On native platforms (APK), use the direct backend URL because the
+// ModelScope studio wrapper URL always returns HTML, not JSON.
+const BASE_URL = Capacitor.isNativePlatform()
+  ? 'https://eclipse1302-duo-journal.ms.show'
+  : 'https://www.modelscope.cn/studios/eclipse1302/Duo-Journal';
 
 // ── Backend API calls ────────────────────────────────────
 
@@ -33,11 +40,19 @@ export async function syncTimetable(
   if (captchaCode) body.captcha_code = captchaCode;
   if (sessionId) body.session_id = sessionId;
 
-  const resp = await fetch('/api/timetable/sync', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
+  let resp: Response;
+  try {
+    resp = await fetch(`${BASE_URL}/api/timetable/sync`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    console.error('[timetable] Network error during sync:', err);
+    throw new Error(
+      'Network error: unable to reach the server. Please check your internet connection and try again.',
+    );
+  }
 
   const data = await resp.json();
   if (!resp.ok && !data.captcha_required) {
