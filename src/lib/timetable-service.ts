@@ -4,9 +4,20 @@ import type { TimetableCourse } from '../types';
 
 // On native platforms (APK), use the direct backend URL because the
 // ModelScope studio wrapper URL always returns HTML, not JSON.
-const BASE_URL = Capacitor.isNativePlatform()
-  ? 'https://eclipse1302-duo-journal.ms.show'
-  : 'https://www.modelscope.cn/studios/eclipse1302/Duo-Journal';
+const BASE_URL = (() => {
+  if (Capacitor.isNativePlatform()) {
+    // Native apps cannot rely on a same-origin proxy.
+    return 'https://eclipse1302-duo-journal.ms.show';
+  }
+
+  // Web: follow the actual domain the SPA is running on (ms.show vs modelscope wrapper).
+  if (typeof window !== 'undefined' && window.location?.host) {
+    return `${window.location.protocol}//${window.location.host}`;
+  }
+
+  // Fallback.
+  return 'https://eclipse1302-duo-journal.ms.show';
+})();
 
 // ── Backend API calls ────────────────────────────────────
 
@@ -54,7 +65,16 @@ export async function syncTimetable(
     );
   }
 
-  const data = await resp.json();
+  const rawText = await resp.text();
+  let data: SyncResponse;
+  try {
+    data = JSON.parse(rawText) as SyncResponse;
+  } catch {
+    console.error('[timetable] Non-JSON response:', rawText.slice(0, 500));
+    throw new Error(
+      `Server returned an invalid response (HTTP ${resp.status}). The timetable API may be unavailable.`,
+    );
+  }
   if (!resp.ok && !data.captcha_required) {
     throw new Error(data.error || 'Timetable sync failed');
   }
@@ -80,7 +100,7 @@ export async function saveTimetableCourses(
 ): Promise<number> {
   // Supabase RPC sends params as JSON; for JSONB param, pass the array directly
   const { data, error } = await supabase.rpc('save_timetable_courses', {
-    courses: courses as unknown as string,
+    courses,
   });
   if (error) {
     console.error('[timetable] saveTimetableCourses RPC error:', error);
