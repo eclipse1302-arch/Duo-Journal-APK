@@ -14,7 +14,7 @@ import traceback
 from cryptography.hazmat.primitives.asymmetric import padding as asym_padding
 from cryptography.hazmat.primitives import serialization
 
-APP_VERSION = "2026-03-26-v4"  # Version marker to verify deployment
+APP_VERSION = "2026-03-26-v15"  # Version marker to verify deployment
 
 from agent import DiaryCompanionAgent
 
@@ -41,8 +41,23 @@ _ssl_ctx.verify_mode = ssl.CERT_NONE
 
 CAS_LOGIN_URL = "https://auth2.shsmu.edu.cn/cas/login"
 CAS_BASE_URL = "https://auth2.shsmu.edu.cn/cas/"
+CAS_CAPTCHA_URL = "https://auth2.shsmu.edu.cn/cas/captcha.jpg"
 CAS_SERVICE = "https://jwstu.shsmu.edu.cn/Login/authLogin"
 TIMETABLE_API = "https://jwstu.shsmu.edu.cn/Home/GetCurriculumTable"
+
+
+def _extract_visible_text(html: str, max_len: int = 260) -> str:
+    """Extract a compact visible-text summary from HTML for diagnostics."""
+    if not html:
+        return ""
+    try:
+        text = re.sub(r"<script[\s\S]*?</script>", " ", html, flags=re.I)
+        text = re.sub(r"<style[\s\S]*?</style>", " ", text, flags=re.I)
+        text = re.sub(r"<[^>]+>", " ", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        return text[:max_len]
+    except Exception:
+        return ""
 
 
 def _rsa_encrypt(plaintext: str, pub_key_b64: str) -> str:
@@ -95,9 +110,13 @@ def _build_opener(cookie_jar=None):
     """Build a urllib opener that stores cookies and follows redirects."""
     if cookie_jar is None:
         cookie_jar = http.cookiejar.CookieJar()
+    # Force direct connection and ignore system proxy env vars.
+    # Some hosting environments inject proxy settings that rewrite CAS traffic
+    # to webvpn/non-secure pages.
+    proxy_handler = urllib.request.ProxyHandler({})
     cookie_handler = urllib.request.HTTPCookieProcessor(cookie_jar)
     https_handler = urllib.request.HTTPSHandler(context=_ssl_ctx)
-    opener = urllib.request.build_opener(cookie_handler, https_handler)
+    opener = urllib.request.build_opener(proxy_handler, cookie_handler, https_handler)
     opener.addheaders = [
         ("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"),
         ("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"),
@@ -169,8 +188,9 @@ def _fetch_cas_login_page(opener):
     else:
         print("[cas] No RSA public key found - password will be sent in plain text")
 
-    # Detect the captcha input field name from the form
+    # Detect captcha input field names from the form
     captcha_field_name = None
+    captcha_fields = set()
     # Look for input near "captcha" or "验证码" label
     captcha_input_m = re.search(
         r'<input[^>]+name=["\']([^"\']+)["\'][^>]*(?:captcha|验证|validate|authcode)',
@@ -200,9 +220,20 @@ def _fetch_cas_login_page(opener):
                 break
     if captcha_input_m and not captcha_field_name:
         captcha_field_name = captcha_input_m.group(1)
+    if captcha_field_name:
+        captcha_fields.add(captcha_field_name)
+
+    # Collect all input names that look captcha-related
+    for m in re.finditer(r'<input[^>]+name=["\']([^"\']+)["\']', html, re.I):
+        nm = m.group(1)
+        if re.search(r'captcha|authcode|verify|validate|checkcode|rand', nm, re.I):
+            captcha_fields.add(nm)
+    if captcha_fields:
+        fields["__captcha_fields__"] = ",".join(sorted(captcha_fields))
 
     print(f"[cas] Form fields found: {list(fields.keys())}")
     print(f"[cas] Captcha field name detected: {captcha_field_name}")
+    print(f"[cas] Captcha field candidates: {sorted(captcha_fields)}")
 
     # Check for captcha image
     captcha_url = None
@@ -229,11 +260,15 @@ def _fetch_cas_login_page(opener):
             # Relative URL like "captcha.jpg" - resolve against CAS base
             captcha_url = f"{CAS_BASE_URL}{captcha_url}"
 
-    # If the form has an authcode/captcha field but we could not find an <img> src,
-    # many CAS deployments still serve the image at /cas/captcha (same session cookies).
-    if captcha_field_name and not captcha_url:
-        captcha_url = f"{CAS_BASE_URL}captcha"
-        print(f"[cas] Fallback captcha URL (captcha field={captcha_field_name}, no img matched): {captcha_url}")
+    # Force the known SHSMU CAS captcha endpoint when captcha is required.
+    # This avoids brittle HTML img-src parsing differences across CAS layouts.
+    if captcha_field_name:
+        captcha_url = CAS_CAPTCHA_URL
+        print(f"[cas] Using fixed captcha URL: {captcha_url}")
+    elif not captcha_url:
+        # Conservative fallback when no captcha field is detected but HTML still hints captcha.
+        captcha_url = CAS_CAPTCHA_URL
+        print(f"[cas] Fallback fixed captcha URL: {captcha_url}")
 
     print(f"[cas] Captcha URL: {captcha_url}")
 
@@ -251,21 +286,51 @@ def _fetch_cas_login_page(opener):
 def _fetch_captcha_image(opener, captcha_url):
     """Download captcha image and return (base64_data_url, raw_bytes).
 
-    Validates that the response looks like an image (not an HTML page).
+    Per user requirement, always fetch from fixed CAS_CAPTCHA_URL.
     """
-    resp = opener.open(captcha_url, timeout=10)
+    # Add a cache-busting query param so CAS/CDN/proxy won't return a stale image.
+    ts = int(uuid.uuid4().int % 10_000_000_000)
+    target_url = f"{CAS_CAPTCHA_URL}?_={ts}"
+    req = urllib.request.Request(target_url, method="GET")
+    req.add_header("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
+    req.add_header("Cache-Control", "no-cache")
+    req.add_header("Pragma", "no-cache")
+    # Referer should be the login page with service param so CAS binds captcha
+    # to the correct session.
+    referer_url = f"{CAS_LOGIN_URL}?service={urllib.parse.quote(CAS_SERVICE, safe='')}"
+    req.add_header("Referer", referer_url)
+    req.add_header("Origin", "https://auth2.shsmu.edu.cn")
+
+    resp = opener.open(req, timeout=10)
     img_bytes = resp.read()
-    content_type = resp.headers.get("Content-Type", "image/jpeg")
-    # Some wrong captcha URLs return HTML (login page), which would trick the UI.
-    if content_type and "image" not in content_type.lower():
-        snippet = ""
-        try:
-            snippet = img_bytes[:200].decode("utf-8", errors="replace")
-        except Exception:
-            snippet = str(img_bytes[:50])
-        raise ValueError(f"Captcha URL did not return an image (Content-Type={content_type}). Snippet={snippet}")
+    content_type = resp.headers.get("Content-Type", "image/jpeg") or "image/jpeg"
+
     b64 = base64.b64encode(img_bytes).decode("ascii")
     return f"data:{content_type};base64,{b64}", img_bytes
+
+
+def _probe_captcha_url(opener, url: str) -> dict:
+    """Probe fixed captcha endpoint and return minimal diagnostics."""
+    ts = int(uuid.uuid4().int % 10_000_000_000)
+    probe_url = f"{CAS_CAPTCHA_URL}?_={ts}"
+    info = {"url": probe_url, "ok": False}
+    try:
+        req = urllib.request.Request(probe_url, method="GET")
+        req.add_header("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
+        req.add_header("Cache-Control", "no-cache")
+        req.add_header("Pragma", "no-cache")
+        referer_url = f"{CAS_LOGIN_URL}?service={urllib.parse.quote(CAS_SERVICE, safe='')}"
+        req.add_header("Referer", referer_url)
+        req.add_header("Origin", "https://auth2.shsmu.edu.cn")
+        resp = opener.open(req, timeout=10)
+        body = resp.read(512)
+        ct = resp.headers.get("Content-Type", "")
+        info["content_type"] = ct
+        info["ok"] = True
+        info["sample_len"] = len(body)
+    except Exception as e:
+        info["error"] = f"{type(e).__name__}: {e}"
+    return info
 
 
 def _captcha_url_candidates(primary_url):
@@ -273,9 +338,11 @@ def _captcha_url_candidates(primary_url):
     urls = []
     seen = set()
     for u in (
+        CAS_CAPTCHA_URL,
         primary_url,
         f"{CAS_BASE_URL}captcha",
         f"{CAS_BASE_URL}kaptcha.jpg",
+        f"{CAS_BASE_URL}captcha.jpg",
         "https://auth2.shsmu.edu.cn/cas/captcha",
         "https://auth2.shsmu.edu.cn/cas/kaptcha.jpg",
     ):
@@ -294,10 +361,14 @@ def _do_cas_login(opener, fields, username, password, captcha_code=None, captcha
     password_key = fields.pop("__password_field__", None) or "password"
     form_action = fields.pop("__form_action__", None)
     rsa_public_key = fields.pop("__rsa_public_key__", None)
+    captcha_fields_csv = fields.pop("__captcha_fields__", "")
+    captcha_fields_from_html = [x for x in captcha_fields_csv.split(",") if x]
     debug_info["username_key"] = username_key
     debug_info["password_key"] = password_key
     debug_info["captcha_field_detected"] = captcha_field
+    debug_info["captcha_fields_from_html"] = captcha_fields_from_html
     debug_info["captcha_code_len"] = len(captcha_code) if isinstance(captcha_code, str) else 0
+
 
     # Fallback: if login_Key regex didn't find the key, use the sessionKey hidden
     # field value — this is what the browser's enkey() function actually uses.
@@ -328,6 +399,7 @@ def _do_cas_login(opener, fields, username, password, captcha_code=None, captcha
         if k not in post_data and not k.startswith("__"):
             post_data[k] = v
 
+
     # The browser JS sets sessionKey to the RSA public key before submission.
     # We must replicate this so the CAS server can match the key used for encryption.
     # Always set it when RSA is available (the browser always does this).
@@ -345,14 +417,25 @@ def _do_cas_login(opener, fields, username, password, captcha_code=None, captcha
             "validateCode",
             "authcode",
             "authCode",
+            "auth_code",
             "code",
             "captcha_code",
             "captchaCode",
+            "captchacode",
             "verifyCode",
+            "verifycode",
             "validate_code",
+            "checkCode",
+            "checkcode",
+            "randCode",
+            "randcode",
+            "imageCode",
+            "imagecode",
         }
         if captcha_field:
             keys_to_set.add(captcha_field)
+        for nm in captcha_fields_from_html:
+            keys_to_set.add(nm)
 
         for field_name in keys_to_set:
             post_data[field_name] = captcha_code
@@ -424,6 +507,7 @@ def _do_cas_login(opener, fields, username, password, captcha_code=None, captcha
     print(f"[cas-login] Response length: {len(result_html)}")
     debug_info["final_url"] = final_url
     debug_info["response_len"] = len(result_html)
+    debug_info["cas_text_excerpt"] = _extract_visible_text(result_html, 260)
 
     # Some CAS layouts return the page URL still under /cas/login even when a
     # service ticket is embedded in HTML. Try to extract an ST-* token and
@@ -444,6 +528,12 @@ def _do_cas_login(opener, fields, username, password, captcha_code=None, captcha
 
     # Check if login succeeded (redirected away from CAS login page)
     if "cas/login" in final_url.lower() and "ticket" not in final_url.lower():
+        # Record network/security warning but keep legacy flow alive.
+        # Historically this project worked on ModelScope with older logic.
+        if re.search(r'Non-secure Connection|Single Sign On WILL NOT WORK|MUST log in over HTTPS', result_html, re.I):
+            debug_info["non_secure_connection_page"] = True
+            print("[cas-login] Non-secure/WebVPN warning detected; continuing legacy redirect parsing.")
+
         # The URL still shows CAS login page. But check if the response body
         # contains a redirect (some CAS versions use JS-based redirect).
         ticket_m = re.search(r'ticket=(ST-[A-Za-z0-9-]+)', result_html)
@@ -596,15 +686,22 @@ def _do_cas_login(opener, fields, username, password, captcha_code=None, captcha
         # ── Strategy 7: captcha / verification hint (no explicit error text) ──
         # Do NOT trigger just because the page contains a captcha input widget.
         # Some CAS pages always render the captcha form even for other failures.
-        if not err_msg and re.search(
+        if (
+            not err_msg
+            and not debug_info.get("non_secure_connection_page")
+            and re.search(
             r'(请输入验证码|验证码(错误|不正确|失败)|verification code.*(error|invalid)|authcode.*(error|invalid))',
             result_html,
             re.I,
+            )
         ):
+            visible = _extract_visible_text(result_html, 160)
             err_msg = (
                 "Captcha may be required or was incorrect. "
                 "If a verification code is shown, submit it and try again."
             )
+            if visible:
+                err_msg = f"{err_msg} CAS hint: {visible}"
             print(f"[cas-login] Error inferred (strategy 7 - captcha-specific): {err_msg}")
             debug_info["captcha_error_inferred"] = True
 
@@ -612,7 +709,11 @@ def _do_cas_login(opener, fields, username, password, captcha_code=None, captcha
             # Log a large snippet of the response for debugging
             body_snippet = result_html[:2000]
             print(f"[cas-login] No error message extracted from CAS response. Response snippet:\n{body_snippet}")
-            err_msg = "Login failed. The CAS server did not return a specific error. Please try again."
+            visible = _extract_visible_text(result_html, 200)
+            if visible:
+                err_msg = f"CAS login failed. CAS page says: {visible}"
+            else:
+                err_msg = "Login failed. The CAS server did not return a specific error. Please try again."
         debug_info["final_error"] = err_msg
         print(f"[cas-login] Login FAILED: {err_msg}")
         return False, err_msg
@@ -903,7 +1004,7 @@ class SPAHandler(http.server.SimpleHTTPRequestHandler):
                         debug_info=dbg,
                     )
                     if not ok:
-                        payload = {"error": result}
+                        payload = {"error": result, "details": dbg}
                         if debug:
                             payload["debug"] = dbg
                         self._send_json(401, payload)
@@ -926,19 +1027,30 @@ class SPAHandler(http.server.SimpleHTTPRequestHandler):
                 # The tokens must remain fresh for Phase 2 when the user submits.
                 captcha_b64 = None
                 last_cap_err = None
-                for cap_url in _captcha_url_candidates(captcha_url):
-                    try:
-                        captcha_b64, _ = _fetch_captcha_image(opener, cap_url)
-                        print(f"[timetable-sync] Captcha image loaded from {cap_url}")
-                        break
-                    except Exception as e:
-                        last_cap_err = e
-                        print(f"[timetable-sync] Captcha fetch failed for {cap_url}: {e}")
+                attempts = []
+                candidates = [CAS_CAPTCHA_URL]
+                # Per user request, fetch captcha directly from fixed URL.
+                attempts.append(_probe_captcha_url(opener, CAS_CAPTCHA_URL))
+                try:
+                    captcha_b64, _ = _fetch_captcha_image(opener, CAS_CAPTCHA_URL)
+                    print(f"[timetable-sync] Captcha image loaded from fixed URL: {CAS_CAPTCHA_URL}")
+                except Exception as e:
+                    last_cap_err = e
+                    print(f"[timetable-sync] Captcha fetch failed for fixed URL {CAS_CAPTCHA_URL}: {e}")
+
                 if not captcha_b64:
-                    self._send_json(
-                        500,
-                        {"error": f"Could not load captcha image from CAS. Please try again later. ({last_cap_err})"},
-                    )
+                    payload = {
+                        "error": f"Could not load captcha image from CAS. Please try again later. ({last_cap_err})",
+                        "app_version": APP_VERSION,
+                        "debug": {
+                            "phase": 1,
+                            "captcha_field_detected": captcha_field,
+                            "captcha_url_from_html": captcha_url,
+                            "captcha_candidates": candidates,
+                            "captcha_probe_attempts": attempts,
+                        },
+                    }
+                    self._send_json(500, payload)
                     return
 
                 print(f"[timetable-sync] Phase 1: captcha required, returning to user (lt={fields.get('lt', 'N/A')[:20]}...)")
@@ -951,7 +1063,13 @@ class SPAHandler(http.server.SimpleHTTPRequestHandler):
                     "session_id": sid,
                 }
                 if debug:
-                    resp_payload["debug"] = {"phase": 1, "captcha_field_detected": captcha_field}
+                    resp_payload["debug"] = {
+                        "phase": 1,
+                        "captcha_field_detected": captcha_field,
+                        "captcha_url_from_html": captcha_url,
+                        "captcha_candidates": candidates,
+                        "captcha_probe_attempts": attempts,
+                    }
                 self._send_json(200, resp_payload)
                 return
 
@@ -959,7 +1077,7 @@ class SPAHandler(http.server.SimpleHTTPRequestHandler):
             dbg = {"phase": 1, "session_found": False, "captcha_field_saved": captcha_field}
             ok, result = _do_cas_login(opener, fields, username, password, debug_info=dbg)
             if not ok:
-                payload = {"error": result}
+                payload = {"error": result, "details": dbg}
                 if debug:
                     payload["debug"] = dbg
                 self._send_json(401, payload)

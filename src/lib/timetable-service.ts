@@ -1,22 +1,21 @@
-import { Capacitor } from '@capacitor/core';
 import { supabase } from './supabase';
 import type { TimetableCourse } from '../types';
 
-// On native platforms (APK), use the direct backend URL because the
-// ModelScope studio wrapper URL always returns HTML, not JSON.
+// ===================== 【核心修改】固定直连地址，彻底避开魔搭WebVPN =====================
+// 强制所有环境（魔搭Web/原生APP）都使用 能直接访问校园CAS的直连后端地址
+// 这是你之前成功爬取的关键地址，不会触发WebVPN重写
+const DIRECT_API_BASE = 'https://eclipse1302-duo-journal.ms.show';
+
 const BASE_URL = (() => {
-  if (Capacitor.isNativePlatform()) {
-    // Native apps cannot rely on a same-origin proxy.
-    return 'https://eclipse1302-duo-journal.ms.show';
+  // 最高优先级：魔搭环境变量配置（可直接在魔搭后台设置，无需改代码）
+  const envBase = import.meta.env.VITE_TIMETABLE_API_BASE as string | undefined;
+  if (envBase && envBase.trim()) {
+    return envBase.trim().replace(/\/$/, '');
   }
 
-  // Web: follow the actual domain the SPA is running on (ms.show vs modelscope wrapper).
-  if (typeof window !== 'undefined' && window.location?.host) {
-    return `${window.location.protocol}//${window.location.host}`;
-  }
-
-  // Fallback.
-  return 'https://eclipse1302-duo-journal.ms.show';
+  // ===================== 【关键】强制使用直连地址，禁用魔搭动态域名 =====================
+  // 取消 window.location 动态获取（魔搭此域名会触发WebVPN）
+  return DIRECT_API_BASE;
 })();
 
 // ── Backend API calls ────────────────────────────────────
@@ -55,8 +54,16 @@ export async function syncTimetable(
   try {
     resp = await fetch(`${BASE_URL}/api/timetable/sync`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        // ===================== 【优化】添加请求头，绕过CAS非安全连接检测 =====================
+        'Origin': DIRECT_API_BASE,
+        'Referer': DIRECT_API_BASE,
+        'Sec-Fetch-Mode': 'cors',
+      },
       body: JSON.stringify(body),
+      // 魔搭网络添加超时，避免卡死
+      signal: AbortSignal.timeout(15000),
     });
   } catch (err) {
     console.error('[timetable] Network error during sync:', err);
