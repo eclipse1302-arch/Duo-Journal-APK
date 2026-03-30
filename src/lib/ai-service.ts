@@ -5,11 +5,19 @@
 import { Capacitor } from '@capacitor/core';
 import type { CommentStyle } from '../types';
 
-// On native platforms (APK), use the direct backend URL because the
-// ModelScope studio wrapper URL always returns HTML, not JSON.
-const BASE_URL = Capacitor.isNativePlatform()
-  ? 'https://eclipse1302-duo-journal.ms.show'
-  : 'https://www.modelscope.cn/studios/eclipse1302/Duo-Journal';
+const DEFAULT_WEB_BASE = 'https://eclipse1302-duo-journal.ms.show';
+const DEFAULT_NATIVE_BASE = 'https://eclipse1302-duo-journal.ms.show';
+
+const BASE_URL = (() => {
+  const envBase = import.meta.env.VITE_AGENT_API_BASE as string | undefined;
+  if (envBase && envBase.trim()) {
+    return envBase.trim().replace(/\/$/, '');
+  }
+  if (typeof window !== 'undefined' && !Capacitor.isNativePlatform()) {
+    return `${window.location.protocol}//${window.location.host}`;
+  }
+  return Capacitor.isNativePlatform() ? DEFAULT_NATIVE_BASE : DEFAULT_WEB_BASE;
+})();
 
 interface AIResponse {
   comment: string;

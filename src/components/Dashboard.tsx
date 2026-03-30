@@ -165,6 +165,15 @@ export default function Dashboard() {
               )}
             </button>
 
+            {/* Always-visible timetable sync entrypoint */}
+            <button
+              onClick={() => setShowTimetableSync(true)}
+              className="btn-ghost p-2"
+              title="Sync Timetable"
+            >
+              <GraduationCap className="w-4 h-4" />
+            </button>
+
             {/* User indicator with dropdown */}
             <div className="relative" ref={menuRef}>
               <button

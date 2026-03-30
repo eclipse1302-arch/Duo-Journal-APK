@@ -1,21 +1,17 @@
 import { supabase } from './supabase';
 import type { TimetableCourse } from '../types';
 
-// ===================== 【核心修改】固定直连地址，彻底避开魔搭WebVPN =====================
-// 强制所有环境（魔搭Web/原生APP）都使用 能直接访问校园CAS的直连后端地址
-// 这是你之前成功爬取的关键地址，不会触发WebVPN重写
-const DIRECT_API_BASE = 'https://eclipse1302-duo-journal.ms.show';
+const DEFAULT_TIMETABLE_API_BASE = 'https://duo-journal-timetable-lz.fly.dev';
 
 const BASE_URL = (() => {
-  // 最高优先级：魔搭环境变量配置（可直接在魔搭后台设置，无需改代码）
   const envBase = import.meta.env.VITE_TIMETABLE_API_BASE as string | undefined;
   if (envBase && envBase.trim()) {
     return envBase.trim().replace(/\/$/, '');
   }
-
-  // ===================== 【关键】强制使用直连地址，禁用魔搭动态域名 =====================
-  // 取消 window.location 动态获取（魔搭此域名会触发WebVPN）
-  return DIRECT_API_BASE;
+  if (import.meta.env.DEV && typeof window !== 'undefined') {
+    return `${window.location.protocol}//${window.location.host}`;
+  }
+  return DEFAULT_TIMETABLE_API_BASE;
 })();
 
 // ── Backend API calls ────────────────────────────────────
@@ -36,6 +32,17 @@ interface SyncResponse {
   error?: string;
 }
 
+function buildTimetableHeaders(baseUrl: string): Record<string, string> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+  // localtunnel displays an interstitial reminder page unless this header is present.
+  if (baseUrl.includes('.loca.lt')) {
+    headers['bypass-tunnel-reminder'] = '1';
+  }
+  return headers;
+}
+
 /**
  * Call the backend to sync timetable from the university CAS system.
  * May return captcha_required=true on first call if the CAS page has a captcha.
@@ -54,16 +61,8 @@ export async function syncTimetable(
   try {
     resp = await fetch(`${BASE_URL}/api/timetable/sync`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        // ===================== 【优化】添加请求头，绕过CAS非安全连接检测 =====================
-        'Origin': DIRECT_API_BASE,
-        'Referer': DIRECT_API_BASE,
-        'Sec-Fetch-Mode': 'cors',
-      },
+      headers: buildTimetableHeaders(BASE_URL),
       body: JSON.stringify(body),
-      // 魔搭网络添加超时，避免卡死
-      signal: AbortSignal.timeout(15000),
     });
   } catch (err) {
     console.error('[timetable] Network error during sync:', err);

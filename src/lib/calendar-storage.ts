@@ -3,6 +3,13 @@
 
 import { supabase } from './supabase';
 
+function throwIfError(context: string, error: { message?: string } | null) {
+  if (error) {
+    const msg = error.message || 'Unknown Supabase error';
+    throw new Error(`${context}: ${msg}`);
+  }
+}
+
 // ── Calendar Comments ─────────────────────────────────────
 
 export async function getCalendarCommentForDate(
@@ -25,30 +32,34 @@ export async function saveCalendarCommentForDate(
 ): Promise<void> {
   if (!comment.trim()) {
     // Delete if empty
-    await supabase
+    const { error } = await supabase
       .from('calendar_comments')
       .delete()
       .eq('user_id', userId)
       .eq('date', date);
+    throwIfError('Failed to delete calendar comment', error);
     return;
   }
 
-  const { data: existing } = await supabase
+  const { data: existing, error: selectError } = await supabase
     .from('calendar_comments')
     .select('id')
     .eq('user_id', userId)
     .eq('date', date)
     .maybeSingle();
+  throwIfError('Failed to query calendar comment', selectError);
 
   if (existing) {
-    await supabase
+    const { error } = await supabase
       .from('calendar_comments')
       .update({ comment, updated_at: new Date().toISOString() })
       .eq('id', existing.id);
+    throwIfError('Failed to update calendar comment', error);
   } else {
-    await supabase
+    const { error } = await supabase
       .from('calendar_comments')
       .insert({ user_id: userId, date, comment });
+    throwIfError('Failed to insert calendar comment', error);
   }
 }
 
@@ -95,30 +106,34 @@ export async function saveCalendarIconsForDate(
   icons: string[]
 ): Promise<void> {
   if (icons.length === 0) {
-    await supabase
+    const { error } = await supabase
       .from('calendar_icons')
       .delete()
       .eq('user_id', userId)
       .eq('date', date);
+    throwIfError('Failed to delete calendar icons', error);
     return;
   }
 
-  const { data: existing } = await supabase
+  const { data: existing, error: selectError } = await supabase
     .from('calendar_icons')
     .select('id')
     .eq('user_id', userId)
     .eq('date', date)
     .maybeSingle();
+  throwIfError('Failed to query calendar icons', selectError);
 
   if (existing) {
-    await supabase
+    const { error } = await supabase
       .from('calendar_icons')
       .update({ icons, updated_at: new Date().toISOString() })
       .eq('id', existing.id);
+    throwIfError('Failed to update calendar icons', error);
   } else {
-    await supabase
+    const { error } = await supabase
       .from('calendar_icons')
       .insert({ user_id: userId, date, icons });
+    throwIfError('Failed to insert calendar icons', error);
   }
 }
 
