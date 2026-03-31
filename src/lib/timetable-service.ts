@@ -1,17 +1,18 @@
 import { supabase } from './supabase';
+import { Capacitor } from '@capacitor/core';
 import type { TimetableCourse } from '../types';
 
-const DEFAULT_TIMETABLE_API_BASE = 'https://duo-journal-timetable-lz.fly.dev';
+const DEFAULT_NATIVE_TIMETABLE_API_BASE = 'https://duo-journal-timetable-lz.fly.dev';
 
 const BASE_URL = (() => {
   const envBase = import.meta.env.VITE_TIMETABLE_API_BASE as string | undefined;
-  if (envBase && envBase.trim()) {
+  if (Capacitor.isNativePlatform() && envBase && envBase.trim()) {
     return envBase.trim().replace(/\/$/, '');
   }
-  if (import.meta.env.DEV && typeof window !== 'undefined') {
+  if (typeof window !== 'undefined' && !Capacitor.isNativePlatform()) {
     return `${window.location.protocol}//${window.location.host}`;
   }
-  return DEFAULT_TIMETABLE_API_BASE;
+  return DEFAULT_NATIVE_TIMETABLE_API_BASE;
 })();
 
 // ── Backend API calls ────────────────────────────────────

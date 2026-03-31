@@ -1,6 +1,8 @@
 param(
   [int]$Port = 7860,
-  [switch]$ForceLocalTunnel
+  [switch]$ForceLocalTunnel,
+  [string]$RegistryUrl = "https://eclipse1302-duo-journal.ms.show/api/timetable/register-tunnel",
+  [string]$RegisterToken = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -58,6 +60,23 @@ $env:PORT = "$Port"
 Write-Host "[run] Starting local backend on http://127.0.0.1:$Port"
 $backendProc = Start-Process -FilePath $venvPy -ArgumentList "app.py" -WorkingDirectory $root -PassThru
 
+function Register-TunnelUrl {
+  param([string]$TunnelUrl)
+  if (-not $RegistryUrl) { return }
+  try {
+    $payload = @{ url = $TunnelUrl }
+    if ($RegisterToken) { $payload.token = $RegisterToken }
+    $json = $payload | ConvertTo-Json -Compress
+    $resp = Invoke-RestMethod -Uri $RegistryUrl -Method POST -ContentType "application/json" -Body $json -TimeoutSec 12
+    Write-Host "[register] Registered tunnel -> $RegistryUrl"
+    if ($resp.url) {
+      Write-Host "[register] Active URL: $($resp.url)"
+    }
+  } catch {
+    Write-Host "[register] Failed to register tunnel URL: $($_.Exception.Message)"
+  }
+}
+
 try {
   $ready = $false
   for ($i = 0; $i -lt 20; $i++) {
@@ -82,13 +101,29 @@ try {
     Write-Host "[tunnel] Keep this window open. Press Ctrl+C to stop."
     Write-Host "[tunnel] Use the printed https://*.trycloudflare.com as VITE_TIMETABLE_API_BASE"
     Write-Host ""
-    & $cloudflaredExe tunnel --url "http://127.0.0.1:$Port" --no-autoupdate
+    $registered = $false
+    & $cloudflaredExe tunnel --url "http://127.0.0.1:$Port" --no-autoupdate 2>&1 | ForEach-Object {
+      $line = "$_"
+      Write-Host $line
+      if (-not $registered -and $line -match "https://[a-z0-9-]+\.trycloudflare\.com") {
+        $registered = $true
+        Register-TunnelUrl -TunnelUrl $Matches[0]
+      }
+    }
   } else {
     Write-Host "[tunnel] Starting localtunnel fallback..."
     Write-Host "[tunnel] Keep this window open. Press Ctrl+C to stop."
     Write-Host "[tunnel] Use the printed https://*.loca.lt as VITE_TIMETABLE_API_BASE"
     Write-Host ""
-    npx localtunnel --port $Port
+    $registered = $false
+    npx localtunnel --port $Port 2>&1 | ForEach-Object {
+      $line = "$_"
+      Write-Host $line
+      if (-not $registered -and $line -match "https://[a-z0-9-]+\.loca\.lt") {
+        $registered = $true
+        Register-TunnelUrl -TunnelUrl $Matches[0]
+      }
+    }
   }
 }
 finally {

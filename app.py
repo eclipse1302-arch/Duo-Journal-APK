@@ -11,10 +11,11 @@ import urllib.parse
 import ssl
 import base64
 import traceback
+import datetime
 from cryptography.hazmat.primitives.asymmetric import padding as asym_padding
 from cryptography.hazmat.primitives import serialization
 
-APP_VERSION = "2026-03-30-v19"  # Version marker to verify deployment
+APP_VERSION = "2026-03-31-v20"  # Version marker to verify deployment
 
 try:
     from agent import DiaryCompanionAgent
@@ -27,6 +28,8 @@ else:
 PORT = int(os.environ.get("PORT", "7860"))
 DIST_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dist")
 CONFIG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agentconfig")
+RUNTIME_TUNNEL_STATE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runtime_tunnel_state.json")
+REGISTER_TOKEN = os.environ.get("TUNNEL_REGISTER_TOKEN", "").strip()
 
 SUPABASE_REMOTE_URL = "https://nxjhygndibrmapwofvcs.supabase.co"
 
@@ -45,6 +48,35 @@ def _get_agent():
 
 # In-memory store for CAS sessions (session_id -> { cookie_jar, form_fields })
 _cas_sessions: dict = {}
+_runtime_tunnel_url = None
+_runtime_tunnel_updated_at = None
+
+
+def _load_runtime_tunnel_state():
+    global _runtime_tunnel_url, _runtime_tunnel_updated_at
+    try:
+        if not os.path.exists(RUNTIME_TUNNEL_STATE):
+            return
+        with open(RUNTIME_TUNNEL_STATE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        url = str(data.get("url", "")).strip()
+        if url.startswith("http://") or url.startswith("https://"):
+            _runtime_tunnel_url = url.rstrip("/")
+            _runtime_tunnel_updated_at = data.get("updated_at")
+    except Exception as e:
+        print(f"[runtime-tunnel] load failed: {e}")
+
+
+def _save_runtime_tunnel_state(url: str):
+    global _runtime_tunnel_url, _runtime_tunnel_updated_at
+    _runtime_tunnel_url = url.rstrip("/")
+    _runtime_tunnel_updated_at = datetime.datetime.utcnow().isoformat() + "Z"
+    payload = {"url": _runtime_tunnel_url, "updated_at": _runtime_tunnel_updated_at}
+    try:
+        with open(RUNTIME_TUNNEL_STATE, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
+    except Exception as e:
+        print(f"[runtime-tunnel] save failed: {e}")
 
 # SSL context that skips certificate verification (some university CAS servers
 # use self-signed or misconfigured certificates)
@@ -899,6 +931,9 @@ class SPAHandler(http.server.SimpleHTTPRequestHandler):
         if self.path == "/api/version":
             self._send_json(200, {"version": APP_VERSION})
             return
+        if self.path == "/api/timetable/runtime":
+            self._handle_timetable_runtime_get()
+            return
 
         path = self.translate_path(self.path)
         if not os.path.exists(path) or (
@@ -919,6 +954,8 @@ class SPAHandler(http.server.SimpleHTTPRequestHandler):
             self._handle_agent_chat()
         elif self.path == "/api/timetable/sync":
             self._handle_timetable_sync()
+        elif self.path == "/api/timetable/register-tunnel":
+            self._handle_timetable_runtime_register()
         elif self.path.startswith("/api/ai/"):
             self._proxy_ai_request()
         else:
@@ -978,6 +1015,67 @@ class SPAHandler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _handle_timetable_runtime_get(self) -> None:
+        self._send_json(
+            200,
+            {
+                "url": _runtime_tunnel_url,
+                "updated_at": _runtime_tunnel_updated_at,
+                "version": APP_VERSION,
+            },
+        )
+
+    def _handle_timetable_runtime_register(self) -> None:
+        try:
+            body = self._read_body()
+            url = str(body.get("url", "")).strip().rstrip("/")
+            token = str(body.get("token", "")).strip()
+            if REGISTER_TOKEN and token != REGISTER_TOKEN:
+                self._send_json(403, {"error": "Invalid register token"})
+                return
+            if not (url.startswith("https://") or url.startswith("http://")):
+                self._send_json(400, {"error": "url must start with http:// or https://"})
+                return
+            _save_runtime_tunnel_state(url)
+            print(f"[runtime-tunnel] registered: {_runtime_tunnel_url}")
+            self._send_json(
+                200,
+                {"ok": True, "url": _runtime_tunnel_url, "updated_at": _runtime_tunnel_updated_at},
+            )
+        except Exception as e:
+            self._send_json(500, {"error": f"register failed: {e}"})
+
+    def _proxy_timetable_sync(self, tunnel_base: str, raw_body: bytes) -> bool:
+        target = f"{tunnel_base}/api/timetable/sync"
+        try:
+            req = urllib.request.Request(target, data=raw_body, method="POST")
+            req.add_header("Content-Type", self.headers.get("Content-Type", "application/json"))
+            req.add_header("X-Timetable-Forwarded", "1")
+            if ".loca.lt" in tunnel_base:
+                req.add_header("bypass-tunnel-reminder", "1")
+            with urllib.request.urlopen(req, timeout=35) as resp:
+                data = resp.read()
+                self.send_response(resp.getcode())
+                self.send_header("Content-Type", resp.headers.get("Content-Type", "application/json"))
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(data)
+                return True
+        except urllib.error.HTTPError as e:
+            data = e.read() if hasattr(e, "read") else b""
+            self.send_response(e.code)
+            self.send_header("Content-Type", e.headers.get("Content-Type", "application/json"))
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            if data:
+                self.wfile.write(data)
+            return True
+        except Exception as e:
+            self._send_json(502, {"error": f"Tunnel proxy failed: {e}", "target": target})
+            return True
+
     def _handle_agent_comment(self) -> None:
         try:
             ag = _get_agent()
@@ -1034,6 +1132,14 @@ class SPAHandler(http.server.SimpleHTTPRequestHandler):
         """
         try:
             body = self._read_body()
+            if (
+                _runtime_tunnel_url
+                and self.headers.get("X-Timetable-Forwarded", "") != "1"
+            ):
+                raw_body = json.dumps(body, ensure_ascii=False).encode("utf-8")
+                if self._proxy_timetable_sync(_runtime_tunnel_url, raw_body):
+                    return
+
             username = body.get("username", "").strip()
             password = body.get("password", "").strip()
             session_id = body.get("session_id", "")
@@ -1335,8 +1441,11 @@ class SPAHandler(http.server.SimpleHTTPRequestHandler):
 
 
 def main():
+    _load_runtime_tunnel_state()
     print(f"Duo Journal - Serving from {DIST_DIR}")
     print(f"Agent config loaded from {CONFIG_DIR}")
+    if _runtime_tunnel_url:
+        print(f"Runtime tunnel loaded: {_runtime_tunnel_url} (updated={_runtime_tunnel_updated_at})")
     print(f"Starting server on port {PORT}...")
 
     with socketserver.ThreadingTCPServer(("0.0.0.0", PORT), SPAHandler) as httpd:
