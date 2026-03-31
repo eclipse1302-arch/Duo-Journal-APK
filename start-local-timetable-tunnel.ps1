@@ -102,13 +102,19 @@ try {
     Write-Host "[tunnel] Use the printed https://*.trycloudflare.com as VITE_TIMETABLE_API_BASE"
     Write-Host ""
     $registered = $false
-    & $cloudflaredExe tunnel --url "http://127.0.0.1:$Port" --no-autoupdate 2>&1 | ForEach-Object {
-      $line = "$_"
-      Write-Host $line
-      if (-not $registered -and $line -match "https://[a-z0-9-]+\.trycloudflare\.com") {
-        $registered = $true
-        Register-TunnelUrl -TunnelUrl $Matches[0]
+    $oldEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+      & $cloudflaredExe tunnel --url "http://127.0.0.1:$Port" --no-autoupdate 2>&1 | ForEach-Object {
+        $line = "$_"
+        Write-Host $line
+        if (-not $registered -and $line -match "https://[a-z0-9-]+\.trycloudflare\.com") {
+          $registered = $true
+          Register-TunnelUrl -TunnelUrl $Matches[0]
+        }
       }
+    } finally {
+      $ErrorActionPreference = $oldEap
     }
   } else {
     Write-Host "[tunnel] Starting localtunnel fallback..."
