@@ -12,6 +12,16 @@ node_modules
 dist-ssr
 *.local
 
+# Local runtime/tooling artifacts (can exceed GitHub 100MB limit)
+.tools/
+.venv_timetable/
+android/.gradle/
+android/app/build/
+android/build/
+*.zip
+*.apk
+*.aab
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
